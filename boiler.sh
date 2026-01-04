@@ -155,6 +155,7 @@ transcode_sample() {
         -c:v hevc_videotoolbox \
         -b:v ${bitrate_kbps}k \
         -c:a copy \
+        -movflags +faststart \
         -f mp4 \
         "$output_file" \
         -loglevel error -stats
@@ -301,6 +302,8 @@ transcode_full_video() {
         -c:v hevc_videotoolbox \
         -b:v ${bitrate_kbps}k \
         -c:a copy \
+        -movflags +faststart \
+        -tag:v hvc1 \
         -f mp4 \
         "$output_file" \
         -loglevel info -stats

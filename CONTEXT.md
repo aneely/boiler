@@ -8,6 +8,30 @@ This project provides a simplified command-line interface for transcoding video 
 
 **Important**: Before adding or modifying items in [PLAN.md](PLAN.md), please discuss the proposed changes with the project maintainer. Planning decisions should be made collaboratively through conversation rather than unilaterally updating the plan document.
 
+### Documentation Update Directive
+
+**When the user asks to "update for the next session", "remember the current state", or similar requests to preserve project state:**
+
+1. **Update CONTEXT.md** with:
+   - Any new architectural changes or code organization
+   - Recent improvements, bug fixes, or refactorings
+   - New technical details, design decisions, or implementation notes
+   - Any changes to dependencies, file structure, or core components
+
+2. **Update PLAN.md** with:
+   - Current status of implemented features
+   - Any new known issues or limitations discovered
+   - Recent changes to the roadmap or priorities
+   - Updates to helper scripts or tooling
+
+3. **Update README.md** with:
+   - Any missing information about current features or usage
+   - New troubleshooting information
+   - Updates to code structure or architecture descriptions
+   - Any user-facing changes that should be documented
+
+The goal is to ensure that a new session can pick up exactly where the previous one left off, with full context about the current state of the project, recent changes, and any important implementation details.
+
 ## Current Implementation
 
 ### Architecture
@@ -91,6 +115,7 @@ The script uses an iterative approach to find the optimal bitrate setting:
 - **Audio**: Copy (no re-encoding)
 - **Output naming**: `{original_name}_transcoded.mp4`
 - **Platform**: Optimized for macOS Sequoia (hardware acceleration unlocked)
+- **QuickLook compatibility**: Uses `-movflags +faststart` and `-tag:v hvc1` for macOS Finder QuickLook support
 
 ### Dependencies
 
@@ -157,6 +182,7 @@ The script uses two methods to determine bitrate:
 - Fixed `bc` parse errors by sanitizing all values (removing newlines/whitespace) before passing to `bc`
 - Fixed function return value corruption by redirecting logging functions to stderr
 - Added value sanitization throughout to prevent issues with `ffprobe` and `bc` outputs containing trailing newlines
+- Added QuickLook compatibility: `-movflags +faststart` and `-tag:v hvc1` flags for macOS Finder preview support
 
 ## Current Limitations
 
@@ -214,4 +240,12 @@ All values passed to `bc` are sanitized using `tr -d '\n\r' | xargs` to:
 - Ensure clean numeric values for calculations
 
 This is critical because `ffprobe` and `bc` outputs may contain trailing newlines that cause parse errors when passed to subsequent `bc` calculations.
+
+### QuickLook Compatibility
+
+The script includes flags to ensure macOS Finder QuickLook compatibility:
+- **`-movflags +faststart`**: Moves metadata (moov atom) to the beginning of the file, allowing QuickLook to read file information immediately without scanning the entire file
+- **`-tag:v hvc1`**: Ensures proper HEVC codec tagging in the MP4 container for better compatibility with macOS QuickTime/QuickLook
+
+These flags are applied to both sample transcoding and full video transcoding to ensure consistent behavior and QuickLook compatibility throughout the optimization process.
 

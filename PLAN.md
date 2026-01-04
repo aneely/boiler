@@ -52,3 +52,23 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - **VideoToolbox limitation**: VideoToolbox HEVC only supports bitrate mode, not CRF. The algorithm was changed from CRF-based to bitrate-based optimization.
 - **Multi-point sampling**: Implemented to address issue where single sample from beginning didn't accurately predict full video bitrate.
 - **Iteration limit**: Reduced from 20 to 10 iterations with error exit to prevent infinite loops.
+
+## Future Enhancements
+
+### Smart Pre-processing
+
+- [ ] **Skip already optimized files**: Exit early if the source file is already below the target bitrate for its resolution. This prevents unnecessary transcoding when the file is already at or below the target bitrate.
+
+### Batch Processing
+
+- [ ] **Multiple files in current directory**: Process all video files found in the current directory, not just the first one. This would allow transcoding multiple videos in a single run.
+- [ ] **Subdirectory processing (one level deep)**: Process video files in subdirectories one level deep from the current directory. This would enable batch processing of organized video collections.
+
+### File Detection and Naming
+
+- [ ] **Detect already transcoded files**: Add logic to detect files that have already been transcoded based on the file naming convention. This would prevent re-transcoding files that have already been processed.
+- [ ] **Programmatic file naming convention**: Establish and implement a consistent, programmatically detectable naming convention for transcoded files. This convention should:
+  - Be easily identifiable as a transcoded file
+  - Allow detection of the original source file
+  - Support the detection feature above
+  - Be consistent and predictable for automation
