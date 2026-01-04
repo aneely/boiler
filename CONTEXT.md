@@ -12,13 +12,40 @@ This project provides a simplified command-line interface for transcoding video 
 
 ### Architecture
 
-The tool is implemented as a single bash script (`boiler.sh`) that:
+The tool is implemented as a modular bash script (`boiler.sh`) organized into focused functions:
 
 1. **Discovers video files** in the current working directory
 2. **Analyzes video properties** (resolution, duration) using `ffprobe`
 3. **Determines target bitrate** based on resolution
 4. **Iteratively finds optimal bitrate setting** by transcoding samples from multiple points
 5. **Transcodes the full video** using the optimal settings
+
+#### Code Organization
+
+The script is modularized into the following function categories:
+
+**Utility Functions:**
+- `check_requirements()` - Validates that ffmpeg, ffprobe, and bc are installed
+- `find_video_file()` - Discovers video files in the current directory
+- `get_video_resolution()` - Extracts video resolution using ffprobe
+- `get_video_duration()` - Extracts video duration using ffprobe
+
+**Configuration Functions:**
+- `calculate_target_bitrate()` - Determines target bitrate based on resolution
+- `calculate_sample_points()` - Calculates sample points (10%, 50%, 90%) with bounds checking
+
+**Transcoding Functions:**
+- `transcode_sample()` - Transcodes a single sample from a specific point
+- `measure_sample_bitrate()` - Measures actual bitrate from a sample file
+- `find_optimal_bitrate()` - Main optimization loop that iteratively finds optimal bitrate
+- `transcode_full_video()` - Transcodes the complete video with optimal settings
+- `cleanup_samples()` - Removes temporary sample files
+
+**Main Orchestration:**
+- `main()` - Orchestrates all steps in the correct order
+
+**Logging Functions:**
+- `info()`, `warn()`, `error()` - Color-coded output functions (output to stderr to avoid interfering with function return values)
 
 ### Core Components
 
@@ -107,6 +134,8 @@ The script uses two methods to determine bitrate:
 - Checks for video file existence
 - Validates resolution detection
 - Handles missing bitrate metadata gracefully
+- All values passed to `bc` are sanitized (newlines and whitespace removed) to prevent parse errors
+- Logging functions output to stderr to prevent interference with function return values
 
 ### Output Formatting
 
@@ -115,6 +144,19 @@ The script uses two methods to determine bitrate:
   - **Yellow**: Warnings
   - **Red**: Errors
 - Progress indicators for iterations and transcoding status
+- All logging functions (`info()`, `warn()`, `error()`) output to stderr to ensure they don't interfere with function return values when captured via command substitution
+
+## Recent Improvements
+
+### Modularization (Latest)
+- Refactored script into focused functions for better maintainability
+- Separated concerns: utility functions, configuration, transcoding, and orchestration
+- Main execution flow clearly visible in `main()` function
+
+### Bug Fixes (Latest)
+- Fixed `bc` parse errors by sanitizing all values (removing newlines/whitespace) before passing to `bc`
+- Fixed function return value corruption by redirecting logging functions to stderr
+- Added value sanitization throughout to prevent issues with `ffprobe` and `bc` outputs containing trailing newlines
 
 ## Current Limitations
 
@@ -155,4 +197,21 @@ Hardware acceleration on macOS Sequoia provides significantly faster encoding wh
 ### Why 10 iteration limit?
 
 Prevents infinite loops if convergence isn't possible. The script exits with an error if it can't find optimal settings within 10 iterations, making failures explicit rather than silently continuing.
+
+### Why modularize into functions?
+
+The script was refactored into functions to improve:
+- **Maintainability**: Each function has a single, clear responsibility
+- **Readability**: The main execution flow is clear in the `main()` function
+- **Testability**: Individual functions can be tested in isolation
+- **Reusability**: Functions can be called independently if needed
+
+### Value Sanitization
+
+All values passed to `bc` are sanitized using `tr -d '\n\r' | xargs` to:
+- Remove newlines and carriage returns that can cause `bc` parse errors
+- Trim leading/trailing whitespace
+- Ensure clean numeric values for calculations
+
+This is critical because `ffprobe` and `bc` outputs may contain trailing newlines that cause parse errors when passed to subsequent `bc` calculations.
 

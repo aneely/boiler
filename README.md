@@ -84,6 +84,8 @@ brew install bc
 
 ## How It Works
 
+The script follows a modular architecture with focused functions for each step:
+
 1. **Discovery**: Finds the first video file in the current directory
 2. **Analysis**: Uses `ffprobe` to determine video resolution and duration
 3. **Targeting**: Sets target bitrate based on resolution
@@ -94,6 +96,8 @@ brew install bc
    - Adjusts bitrate setting until actual output matches target (±10% tolerance)
    - Maximum 10 iterations, exits with error if not converged
 5. **Encoding**: Transcodes the full video using the optimal bitrate setting
+
+The script is organized into modular functions for maintainability and clarity. All values are sanitized to prevent calculation errors, and logging output is properly separated from function return values.
 
 ## Supported Video Formats
 
@@ -150,6 +154,9 @@ This is normal for high-resolution videos. The script uses hardware acceleration
 ### "Reached maximum iterations" error
 If the script fails to converge within 10 iterations, it may indicate that the target bitrate is not achievable with the current settings, or there's an issue with the video file. Check that the video file is valid and not corrupted.
 
+### Parse errors or calculation issues
+The script includes value sanitization to prevent calculation errors. If you encounter parse errors, ensure that `bc` is properly installed and that video file metadata is readable. The script automatically cleans values before calculations to handle edge cases.
+
 ### Helper Scripts
 
 For testing and development, helper scripts are available:
@@ -166,8 +173,19 @@ This is an early-stage project. Contributions and feedback are welcome!
 
 See individual file headers for license information. Test videos are licensed under Creative Commons Attribution (see `testdata/video-attribution-cc-license.txt`).
 
+## Code Structure
+
+The script is organized into modular functions for better maintainability:
+
+- **Utility functions**: Video discovery, resolution/duration detection, requirement checking
+- **Configuration functions**: Target bitrate calculation, sample point calculation
+- **Transcoding functions**: Sample transcoding, bitrate measurement, optimization loop, full video transcoding
+- **Main orchestration**: The `main()` function coordinates all steps
+
+This modular structure makes the code easier to understand, test, and maintain. For detailed technical information, see [CONTEXT.md](CONTEXT.md).
+
 ## Related Documentation
 
-- [CONTEXT.md](CONTEXT.md) - Technical details and architecture
+- [CONTEXT.md](CONTEXT.md) - Technical details, architecture, and design decisions
 - [PLAN.md](PLAN.md) - Development roadmap and future features
 
