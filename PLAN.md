@@ -27,6 +27,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Color-coded output messages
 - [x] Error handling and validation
 - [x] 10 iteration limit with error on failure to converge
+- [x] Early exit check: Skip transcoding if source video is already within ±10% of target bitrate
 - [x] Helper scripts for testing (copy test videos, cleanup)
 
 ### Current Defaults
@@ -52,12 +53,13 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - **VideoToolbox limitation**: VideoToolbox HEVC only supports bitrate mode, not CRF. The algorithm was changed from CRF-based to bitrate-based optimization.
 - **Multi-point sampling**: Implemented to address issue where single sample from beginning didn't accurately predict full video bitrate.
 - **Iteration limit**: Reduced from 20 to 10 iterations with error exit to prevent infinite loops.
+- **Code refactoring**: Consolidated duplicate bitrate measurement logic into generic `measure_bitrate()` function. Extracted tolerance checking into `is_within_tolerance()` helper. Added `sanitize_value()` helper for consistent value sanitization.
 
 ## Future Enhancements
 
 ### Smart Pre-processing
 
-- [ ] **Skip already optimized files**: Exit early if the source file is already below the target bitrate for its resolution. This prevents unnecessary transcoding when the file is already at or below the target bitrate.
+- [x] **Skip already optimized files**: Exit early if the source file is already within ±10% of the target bitrate for its resolution. This prevents unnecessary transcoding when the file is already optimized. (Implemented)
 
 ### Batch Processing
 

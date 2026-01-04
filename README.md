@@ -9,6 +9,7 @@ A simplified command-line tool for transcoding video files with automatic qualit
 - 🚀 **Hardware acceleration** - Uses Apple VideoToolbox for fast encoding on macOS
 - 📊 **Progress feedback** - Color-coded output with clear status messages
 - ⚡ **Fast iteration** - Uses multi-point sampling (3 samples per iteration) to quickly find optimal settings
+- ✨ **Smart pre-processing** - Automatically skips transcoding if source video is already within target bitrate tolerance
 
 ## Current Defaults
 
@@ -58,7 +59,8 @@ brew install bc
    - Find the video file in the current directory
    - Analyze its resolution and duration
    - Determine the target bitrate
-   - Iteratively find the optimal bitrate setting by sampling from multiple points
+   - Check if source video is already within ±10% of target (exits early if so)
+   - Iteratively find the optimal bitrate setting by sampling from multiple points (if needed)
    - Transcode the full video
    - Output: `{original_name}_transcoded.mp4`
 
@@ -89,15 +91,16 @@ The script follows a modular architecture with focused functions for each step:
 1. **Discovery**: Finds the first video file in the current directory
 2. **Analysis**: Uses `ffprobe` to determine video resolution and duration
 3. **Targeting**: Sets target bitrate based on resolution
-4. **Optimization**: 
+4. **Pre-check**: Checks if source video is already within ±10% of target bitrate (exits early if so)
+5. **Optimization** (if needed): 
    - Samples from 3 points (beginning ~10%, middle ~50%, end ~90%)
    - Transcodes 15-second samples at different bitrate settings
    - Averages bitrates from all 3 samples
    - Adjusts bitrate setting until actual output matches target (±10% tolerance)
    - Maximum 10 iterations, exits with error if not converged
-5. **Encoding**: Transcodes the full video using the optimal bitrate setting
+6. **Encoding**: Transcodes the full video using the optimal bitrate setting
 
-The script is organized into modular functions for maintainability and clarity. All values are sanitized to prevent calculation errors, and logging output is properly separated from function return values.
+The script is organized into modular functions for maintainability and clarity. All values are sanitized to prevent calculation errors, and logging output is properly separated from function return values. The codebase has been refactored to eliminate duplication with shared helper functions for bitrate measurement, tolerance checking, and value sanitization.
 
 ## Supported Video Formats
 
