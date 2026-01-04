@@ -8,6 +8,16 @@ This project provides a simplified command-line interface for transcoding video 
 
 **Important**: Before adding or modifying items in [PLAN.md](PLAN.md), please discuss the proposed changes with the project maintainer. Planning decisions should be made collaboratively through conversation rather than unilaterally updating the plan document.
 
+### Implementation Approval Process
+
+**When the user asks for suggestions or options:**
+- Present the options and trade-offs clearly
+- **Do NOT automatically implement changes** - wait for explicit approval
+- Allow the user to discuss, ask questions, and choose which approach they prefer
+- Only implement changes after the user explicitly requests them
+
+This ensures the user maintains control over the development direction and can make informed decisions about which solutions best fit their needs.
+
 ### Documentation Update Directive
 
 **When the user asks to "update for the next session", "remember the current state", or similar requests to preserve project state:**
