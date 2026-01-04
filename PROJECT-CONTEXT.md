@@ -189,10 +189,40 @@ The script uses two methods to determine bitrate:
 
 ## Recent Improvements
 
-### Code Refactoring (Latest)
+### Code Refactoring
 - **Consolidated bitrate measurement**: Created generic `measure_bitrate()` function that eliminates duplicate code between `get_source_bitrate()` and `measure_sample_bitrate()`. Both functions now call the shared implementation.
 - **Extracted tolerance checking**: Created `is_within_tolerance()` function to replace duplicate range checking logic in `main()` and `find_optimal_bitrate()`. Improves readability and maintainability.
 - **Value sanitization helper**: Added `sanitize_value()` function for consistent sanitization of values before bc calculations. Used throughout the script for cleaner, more maintainable code.
+
+## Current Session Status
+
+### Tested but Not Yet Committed
+
+**Performance Optimizations (tested, working, needs implementation):**
+- **Adaptive sample duration based on file size**: Tested implementation that adjusts sample duration based on file size thresholds:
+  - >10GB: 5 seconds per sample
+  - >5GB: 7 seconds per sample
+  - >2GB: 10 seconds per sample
+  - ≤2GB: 15 seconds per sample (default)
+  - This significantly reduces iteration time for large 2160p files
+  - Implementation: Modify `calculate_sample_points()` to accept file size parameter and calculate adaptive duration
+
+- **Input seeking optimization**: Tested change to move `-ss` flag before `-i` in `transcode_sample()` function:
+  - Changed from: `ffmpeg -y -i "$video_file" -ss "$sample_start" ...`
+  - Changed to: `ffmpeg -y -ss "$sample_start" -i "$video_file" ...`
+  - This uses input seeking instead of output seeking, making all three samples roughly the same speed
+  - **Known issue**: This change causes FFmpeg child processes to not be properly cleaned up when script is interrupted (Ctrl+C)
+
+### Known Issues
+
+- **FFmpeg processes not cleaned up on interrupt**: When using input seeking (`-ss` before `-i`), interrupting the script (Ctrl+C) leaves FFmpeg child processes running. Signal handling needs to be implemented to properly kill child processes on interrupt.
+- **Sample duration**: Currently hardcoded to 15 seconds. For large 2160p files, this causes very long iteration times (each sample taking minutes to transcode).
+
+### Next Steps
+
+1. Implement adaptive sample duration based on file size (tested, working)
+2. Implement input seeking optimization (tested, working)
+3. Add signal handling to properly clean up FFmpeg processes on interrupt (needed to fix issue with input seeking)
 
 ### Smart Pre-processing
 - Added early exit check: If source video is already within ±10% of target bitrate, the script exits immediately with a helpful message, avoiding unnecessary transcoding work

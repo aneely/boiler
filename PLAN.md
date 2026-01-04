@@ -54,6 +54,8 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - **Multi-point sampling**: Implemented to address issue where single sample from beginning didn't accurately predict full video bitrate.
 - **Iteration limit**: Reduced from 20 to 10 iterations with error exit to prevent infinite loops.
 - **Code refactoring**: Consolidated duplicate bitrate measurement logic into generic `measure_bitrate()` function. Extracted tolerance checking into `is_within_tolerance()` helper. Added `sanitize_value()` helper for consistent value sanitization.
+- **Performance issue with large files**: Sample duration is hardcoded to 15 seconds, causing very long iteration times for large 2160p files. Adaptive sample duration based on file size has been tested and works well, but needs to be implemented.
+- **FFmpeg process cleanup**: When using input seeking (`-ss` before `-i`), interrupting the script leaves FFmpeg child processes running. Signal handling needs to be implemented.
 
 ## Future Enhancements
 
