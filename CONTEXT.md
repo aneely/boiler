@@ -4,6 +4,10 @@
 
 This project provides a simplified command-line interface for transcoding video files. The tool automatically determines optimal encoding settings to achieve target bitrates while maintaining quality, making video compression accessible without deep knowledge of FFmpeg parameters.
 
+## Development Workflow
+
+**Important**: Before adding or modifying items in [PLAN.md](PLAN.md), please discuss the proposed changes with the project maintainer. Planning decisions should be made collaboratively through conversation rather than unilaterally updating the plan document.
+
 ## Current Implementation
 
 ### Architecture
