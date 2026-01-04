@@ -23,6 +23,7 @@ A simplified command-line tool for transcoding video files with automatic qualit
 
 ## Requirements
 
+- **macOS** - This tool is currently macOS-only (optimized for macOS Sequoia)
 - **ffmpeg** - Video encoding/transcoding
 - **ffprobe** - Video analysis (usually included with ffmpeg)
 - **bc** - Calculator for bitrate computations
@@ -34,15 +35,9 @@ A simplified command-line tool for transcoding video files with automatic qualit
 brew install ffmpeg
 ```
 
-**Ubuntu/Debian:**
+Note: `bc` is typically pre-installed on macOS. If not available, install with:
 ```bash
-sudo apt-get update
-sudo apt-get install ffmpeg bc
-```
-
-**Fedora/RHEL:**
-```bash
-sudo dnf install ffmpeg bc
+brew install bc
 ```
 
 ## Usage
@@ -114,11 +109,11 @@ The tool automatically detects these video file extensions:
 
 ## Limitations
 
+- **macOS-only** - Currently only supports macOS (VideoToolbox hardware acceleration requires macOS)
 - Currently processes one video file per execution
 - Must be run from the directory containing the video file
 - Uses hardcoded defaults (not yet configurable)
 - Audio is always copied (not re-encoded)
-- Optimized for macOS - VideoToolbox hardware acceleration requires macOS
 - VideoToolbox only supports bitrate mode, not CRF (quality-based encoding)
 
 ## Future Features
@@ -130,11 +125,15 @@ See [PLAN.md](PLAN.md) for the complete roadmap. Upcoming features include:
 - 📊 **Enhanced output modes** - Progress indicators, verbose/quiet modes, dry-run
 - ⚙️ **Configuration system** - Customize default bitrates, codecs, and containers
 - 📦 **Installation** - Install as a system command, run from any directory
+- 🌐 **Cross-platform support** - Port to Linux/Windows (currently macOS-only)
 
 ## Troubleshooting
 
 ### "ffmpeg is not installed or not in PATH"
-Install ffmpeg using your system's package manager (see Requirements above).
+Install ffmpeg using Homebrew:
+```bash
+brew install ffmpeg
+```
 
 ### "No video file found in current directory"
 Make sure you're in the directory containing the video file, or that the video file has a supported extension.

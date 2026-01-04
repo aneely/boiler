@@ -2,11 +2,14 @@
 
 ## Project Goals
 
-Create a simplified command-line tool for video transcoding that:
+Create a simplified command-line tool for video transcoding on macOS that:
 - Provides sensible defaults for common use cases
 - Automatically optimizes quality settings
+- Leverages macOS hardware acceleration for fast encoding
 - Can be easily installed and used from any directory
 - Supports user-configurable preferences
+
+**Note**: Currently macOS-only. Cross-platform support (Linux/Windows) may be considered in the future.
 
 ## Current Status (v0.2)
 
@@ -45,6 +48,7 @@ Create a simplified command-line tool for video transcoding that:
 
 ### Known Issues / Recent Changes
 
+- **macOS-only**: Currently only supports macOS due to VideoToolbox hardware acceleration dependency. Cross-platform support may be added in the future.
 - **VideoToolbox limitation**: VideoToolbox HEVC only supports bitrate mode, not CRF. The algorithm was changed from CRF-based to bitrate-based optimization.
 - **Multi-point sampling**: Implemented to address issue where single sample from beginning didn't accurately predict full video bitrate.
 - **Iteration limit**: Reduced from 20 to 10 iterations with error exit to prevent infinite loops.

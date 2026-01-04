@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project provides a simplified command-line interface for transcoding video files. The tool automatically determines optimal encoding settings to achieve target bitrates while maintaining quality, making video compression accessible without deep knowledge of FFmpeg parameters.
+This project provides a simplified command-line interface for transcoding video files on macOS. The tool automatically determines optimal encoding settings to achieve target bitrates while maintaining quality, making video compression accessible without deep knowledge of FFmpeg parameters. Currently macOS-only, with potential for cross-platform support in the future.
 
 ## Development Workflow
 
@@ -118,16 +118,17 @@ The script uses two methods to determine bitrate:
 
 ## Current Limitations
 
-1. **Single file processing**: Only processes one video per execution
-2. **Directory constraint**: Must be run from directory containing video file
-3. **Hardcoded defaults**: Bitrates, codec, and container are fixed
-4. **No configuration**: No user-configurable settings
-5. **No installation**: Script must be run directly, not installed as system command
-6. **Audio handling**: Always copies audio without re-encoding options
+1. **macOS-only**: Currently only supports macOS (VideoToolbox hardware acceleration requires macOS)
+2. **Single file processing**: Only processes one video per execution
+3. **Directory constraint**: Must be run from directory containing video file
+4. **Hardcoded defaults**: Bitrates, codec, and container are fixed
+5. **No configuration**: No user-configurable settings
+6. **No installation**: Script must be run directly, not installed as system command
+7. **Audio handling**: Always copies audio without re-encoding options
 
 ## Future Direction
 
-This is a proof-of-concept project focused on iterating over ergonomics and usability. Future improvements will be determined based on usage patterns and needs as the project evolves. See [PLAN.md](PLAN.md) and [README.md](README.md) for current status and potential future enhancements.
+This is a proof-of-concept project focused on iterating over ergonomics and usability on macOS. The current implementation leverages macOS-specific hardware acceleration via VideoToolbox. Future improvements will be determined based on usage patterns and needs as the project evolves. Cross-platform support (Linux/Windows) may be considered in the future, but the current focus is on optimizing the macOS experience. See [PLAN.md](PLAN.md) and [README.md](README.md) for current status and potential future enhancements.
 
 ## Design Decisions
 
