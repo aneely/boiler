@@ -89,6 +89,29 @@ get_video_duration() {
     echo "$duration"
 }
 
+# Get source video bitrate
+get_source_bitrate() {
+    local video_file="$1"
+    local video_duration="$2"
+    
+    # Try to get bitrate from ffprobe first
+    local bitrate_bps=$(ffprobe -v error -select_streams v:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$video_file" 2>/dev/null | head -1 | tr -d '\n\r')
+    
+    # If bitrate is not available, use file size calculation as fallback
+    if [ -z "$bitrate_bps" ] || [ "$bitrate_bps" = "N/A" ]; then
+        local file_size_bytes=$(stat -f%z "$video_file" 2>/dev/null || stat -c%s "$video_file" 2>/dev/null | tr -d '\n\r')
+        # Ensure video_duration is clean for bc
+        video_duration=$(echo "$video_duration" | tr -d '\n\r')
+        bitrate_bps=$(echo "scale=0; ($file_size_bytes * 8) / $video_duration" | bc | tr -d '\n\r')
+    fi
+    
+    if [ -n "$bitrate_bps" ] && [ "$bitrate_bps" != "N/A" ]; then
+        echo "$bitrate_bps"
+    else
+        echo ""
+    fi
+}
+
 # Calculate target bitrate based on resolution
 # Returns: TARGET_BITRATE_MBPS TARGET_BITRATE_BPS (via global variables)
 calculate_target_bitrate() {
@@ -336,6 +359,26 @@ main() {
     # Calculate acceptable bitrate range (within 10% of target)
     LOWER_BOUND=$(echo "$TARGET_BITRATE_BPS * 0.9" | bc | tr -d '\n\r')
     UPPER_BOUND=$(echo "$TARGET_BITRATE_BPS * 1.1" | bc | tr -d '\n\r')
+    
+    # Check if source video is already within acceptable range
+    SOURCE_BITRATE_BPS=$(get_source_bitrate "$VIDEO_FILE" "$VIDEO_DURATION")
+    
+    if [ -n "$SOURCE_BITRATE_BPS" ]; then
+        # Clean values for comparison (same logic as in find_optimal_bitrate)
+        SOURCE_BITRATE_BPS=$(echo "$SOURCE_BITRATE_BPS" | tr -d '\n\r' | xargs)
+        LOWER_BOUND=$(echo "$LOWER_BOUND" | tr -d '\n\r' | xargs)
+        UPPER_BOUND=$(echo "$UPPER_BOUND" | tr -d '\n\r' | xargs)
+        
+        # Check if within acceptable range (same logic as in find_optimal_bitrate)
+        if (( $(echo "$SOURCE_BITRATE_BPS >= $LOWER_BOUND" | bc -l) )) && \
+           (( $(echo "$SOURCE_BITRATE_BPS <= $UPPER_BOUND" | bc -l) )); then
+            SOURCE_BITRATE_MBPS=$(echo "scale=2; $SOURCE_BITRATE_BPS / 1000000" | bc | tr -d '\n\r' | xargs)
+            info "Source video bitrate: ${SOURCE_BITRATE_MBPS} Mbps"
+            info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps (acceptable range: ±10%)"
+            info "Source video is already within acceptable range (10% of target). No transcoding needed."
+            exit 0
+        fi
+    fi
     
     # Generate output filename
     OUTPUT_FILE="${VIDEO_FILE%.*}_transcoded.mp4"

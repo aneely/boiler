@@ -41,8 +41,9 @@ The tool is implemented as a modular bash script (`boiler.sh`) organized into fo
 1. **Discovers video files** in the current working directory
 2. **Analyzes video properties** (resolution, duration) using `ffprobe`
 3. **Determines target bitrate** based on resolution
-4. **Iteratively finds optimal bitrate setting** by transcoding samples from multiple points
-5. **Transcodes the full video** using the optimal settings
+4. **Checks if source is already optimized** - Short-circuits if source video is already within ±10% of target bitrate
+5. **Iteratively finds optimal bitrate setting** by transcoding samples from multiple points (if needed)
+6. **Transcodes the full video** using the optimal settings
 
 #### Code Organization
 
@@ -53,6 +54,7 @@ The script is modularized into the following function categories:
 - `find_video_file()` - Discovers video files in the current directory
 - `get_video_resolution()` - Extracts video resolution using ffprobe
 - `get_video_duration()` - Extracts video duration using ffprobe
+- `get_source_bitrate()` - Measures source video bitrate using ffprobe or file size calculation
 
 **Configuration Functions:**
 - `calculate_target_bitrate()` - Determines target bitrate based on resolution
@@ -94,17 +96,18 @@ The script is modularized into the following function categories:
 
 The script uses an iterative approach to find the optimal bitrate setting:
 
-1. **Initial bitrate**: Starts with the target bitrate as the initial guess
-2. **Multi-point sampling**: Creates 15-second samples from 3 points in the video:
+1. **Pre-check**: Before starting optimization, checks if source video is already within ±10% of target bitrate. If so, exits early with a message indicating no transcoding is needed.
+2. **Initial bitrate**: Starts with the target bitrate as the initial guess
+3. **Multi-point sampling**: Creates 15-second samples from 3 points in the video:
    - Beginning (~10% through video)
    - Middle (~50% through video)
    - End (~90% through video)
-3. **Bitrate measurement**: Averages bitrates from all 3 samples using `ffprobe` or file size calculation
-4. **Adjustment logic**:
+4. **Bitrate measurement**: Averages bitrates from all 3 samples using `ffprobe` or file size calculation
+5. **Adjustment logic**:
    - If actual bitrate too low: Increase bitrate setting by 10%
    - If actual bitrate too high: Decrease bitrate setting by 10%
-5. **Convergence**: Stops when actual bitrate is within ±10% of target
-6. **Safety limits**: Maximum 10 iterations, exits with error if not converged
+6. **Convergence**: Stops when actual bitrate is within ±10% of target
+7. **Safety limits**: Maximum 10 iterations, exits with error if not converged
 
 #### Encoding Settings
 
@@ -173,12 +176,17 @@ The script uses two methods to determine bitrate:
 
 ## Recent Improvements
 
-### Modularization (Latest)
+### Smart Pre-processing (Latest)
+- Added early exit check: If source video is already within ±10% of target bitrate, the script exits immediately with a helpful message, avoiding unnecessary transcoding work
+- Uses the same tolerance logic (±10%) and comparison method as the optimization loop for consistency
+- `get_source_bitrate()` function measures source video bitrate using the same approach as sample measurement (ffprobe first, file size fallback)
+
+### Modularization
 - Refactored script into focused functions for better maintainability
 - Separated concerns: utility functions, configuration, transcoding, and orchestration
 - Main execution flow clearly visible in `main()` function
 
-### Bug Fixes (Latest)
+### Bug Fixes
 - Fixed `bc` parse errors by sanitizing all values (removing newlines/whitespace) before passing to `bc`
 - Fixed function return value corruption by redirecting logging functions to stderr
 - Added value sanitization throughout to prevent issues with `ffprobe` and `bc` outputs containing trailing newlines
