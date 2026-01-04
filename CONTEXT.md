@@ -15,9 +15,9 @@ This project provides a simplified command-line interface for transcoding video 
 The tool is implemented as a single bash script (`boiler.sh`) that:
 
 1. **Discovers video files** in the current working directory
-2. **Analyzes video properties** (resolution) using `ffprobe`
+2. **Analyzes video properties** (resolution, duration) using `ffprobe`
 3. **Determines target bitrate** based on resolution
-4. **Iteratively finds optimal CRF value** by transcoding short samples
+4. **Iteratively finds optimal bitrate setting** by transcoding samples from multiple points
 5. **Transcodes the full video** using the optimal settings
 
 ### Core Components
@@ -41,25 +41,29 @@ The tool is implemented as a single bash script (`boiler.sh`) that:
 
 #### Quality Optimization Algorithm
 
-The script uses an iterative approach to find the optimal Constant Rate Factor (CRF):
+The script uses an iterative approach to find the optimal bitrate setting:
 
-1. **Initial CRF**: Starts at 23 (reasonable default for x265)
-2. **Sample transcoding**: Creates 15-second samples at different CRF values
-3. **Bitrate measurement**: Uses `ffprobe` or file size calculation to measure actual bitrate
+1. **Initial bitrate**: Starts with the target bitrate as the initial guess
+2. **Multi-point sampling**: Creates 15-second samples from 3 points in the video:
+   - Beginning (~10% through video)
+   - Middle (~50% through video)
+   - End (~90% through video)
+3. **Bitrate measurement**: Averages bitrates from all 3 samples using `ffprobe` or file size calculation
 4. **Adjustment logic**:
-   - If bitrate too low: Decrease CRF (higher quality, higher bitrate)
-   - If bitrate too high: Increase CRF (lower quality, lower bitrate)
-5. **Convergence**: Stops when bitrate is within ±10% of target
-6. **Safety limits**: CRF constrained between 0-51, max 20 iterations
+   - If actual bitrate too low: Increase bitrate setting by 10%
+   - If actual bitrate too high: Decrease bitrate setting by 10%
+5. **Convergence**: Stops when actual bitrate is within ±10% of target
+6. **Safety limits**: Maximum 10 iterations, exits with error if not converged
 
 #### Encoding Settings
 
 **Current defaults:**
-- **Codec**: HEVC (H.265) via `libx265`
-- **Preset**: `medium` (balance of speed and compression)
+- **Codec**: HEVC (H.265) via `hevc_videotoolbox` (Apple VideoToolbox hardware acceleration)
+- **Quality control**: Bitrate mode (`-b:v`) - VideoToolbox doesn't support CRF
 - **Container**: MP4
 - **Audio**: Copy (no re-encoding)
 - **Output naming**: `{original_name}_transcoded.mp4`
+- **Platform**: Optimized for macOS Sequoia (hardware acceleration unlocked)
 
 ### Dependencies
 
@@ -72,6 +76,9 @@ The script uses an iterative approach to find the optimal Constant Rate Factor (
 ```
 boiler/
 ├── boiler.sh                    # Main transcoding script
+├── copy-1080p-test.sh          # Helper: Copy 1080p test video to current directory
+├── copy-4k-test.sh              # Helper: Copy 4K test video to current directory
+├── cleanup-mp4.sh               # Helper: Remove all .mp4 files from project root
 ├── .gitignore                   # Git ignore patterns (macOS, video files, outputs)
 ├── CONTEXT.md                   # Technical documentation
 ├── PLAN.md                      # Development roadmap
@@ -124,19 +131,27 @@ This is a proof-of-concept project focused on iterating over ergonomics and usab
 
 ## Design Decisions
 
-### Why CRF instead of target bitrate mode?
+### Why bitrate mode instead of CRF?
 
-CRF (Constant Rate Factor) provides better quality consistency across different content types. The iterative approach allows us to approximate target bitrates while maintaining quality.
+VideoToolbox HEVC encoder (used for hardware acceleration on macOS) doesn't support CRF mode - it only supports bitrate mode (`-b:v`). The iterative approach adjusts the bitrate setting until the actual output bitrate matches the target.
+
+### Why multi-point sampling?
+
+Sampling from multiple points (beginning, middle, end) provides a more accurate representation of overall video complexity. A single sample from the beginning might not represent the full video, especially if complexity varies throughout.
 
 ### Why 15-second samples?
 
-Balances speed (shorter samples = faster iterations) with accuracy (longer samples = more representative bitrate). 15 seconds provides good compromise.
+Balances speed (shorter samples = faster iterations) with accuracy (longer samples = more representative bitrate). 15 seconds provides good compromise, and with 3 samples per iteration, we get 45 seconds of total sampling.
 
 ### Why ±10% tolerance?
 
 Allows for natural variation in bitrate while still achieving the target. Too strict would require excessive iterations; too loose would miss the target.
 
-### Why medium preset?
+### Why VideoToolbox instead of libx265?
 
-Balances encoding speed with compression efficiency. Faster presets reduce quality; slower presets take too long for iterative testing.
+Hardware acceleration on macOS Sequoia provides significantly faster encoding while maintaining quality. VideoToolbox is optimized for Apple Silicon and Intel Macs with hardware HEVC support.
+
+### Why 10 iteration limit?
+
+Prevents infinite loops if convergence isn't possible. The script exits with an error if it can't find optimal settings within 10 iterations, making failures explicit rather than silently continuing.
 

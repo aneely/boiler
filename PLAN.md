@@ -8,7 +8,7 @@ Create a simplified command-line tool for video transcoding that:
 - Can be easily installed and used from any directory
 - Supports user-configurable preferences
 
-## Current Status (v0.1)
+## Current Status (v0.2)
 
 ### ✅ Implemented Features
 
@@ -16,20 +16,35 @@ Create a simplified command-line tool for video transcoding that:
 - [x] Resolution-based target bitrate selection
   - 2160p: 11 Mbps
   - 1080p: 8 Mbps
-- [x] Iterative CRF optimization algorithm
-- [x] HEVC/x265 codec with medium preset
+- [x] Iterative bitrate optimization algorithm
+- [x] Multi-point sampling (beginning, middle, end) for accurate bitrate prediction
+- [x] HEVC via Apple VideoToolbox (hardware-accelerated on macOS)
 - [x] MP4 container format
 - [x] Audio stream copying (no re-encoding)
 - [x] Color-coded output messages
 - [x] Error handling and validation
-- [x] Sample-based quality testing (15-second samples)
+- [x] 10 iteration limit with error on failure to converge
+- [x] Helper scripts for testing (copy test videos, cleanup)
 
 ### Current Defaults
 
-- **Codec**: HEVC (H.265) via `libx265`
+- **Codec**: HEVC (H.265) via `hevc_videotoolbox` (hardware-accelerated)
+- **Quality control**: Bitrate mode (`-b:v`) - VideoToolbox doesn't support CRF
 - **Container**: MP4
-- **Preset**: `medium`
 - **Audio**: Copy (passthrough)
 - **Target Bitrates**:
   - 2160p: 11 Mbps
   - 1080p: 8 Mbps
+- **Platform**: macOS Sequoia (hardware acceleration unlocked)
+
+### Helper Scripts
+
+- `copy-1080p-test.sh` - Copies 1080p test video to current directory
+- `copy-4k-test.sh` - Copies 4K test video to current directory
+- `cleanup-mp4.sh` - Removes all .mp4 files from project root directory
+
+### Known Issues / Recent Changes
+
+- **VideoToolbox limitation**: VideoToolbox HEVC only supports bitrate mode, not CRF. The algorithm was changed from CRF-based to bitrate-based optimization.
+- **Multi-point sampling**: Implemented to address issue where single sample from beginning didn't accurately predict full video bitrate.
+- **Iteration limit**: Reduced from 20 to 10 iterations with error exit to prevent infinite loops.

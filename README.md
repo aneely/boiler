@@ -5,20 +5,21 @@ A simplified command-line tool for transcoding video files with automatic qualit
 ## Features
 
 - 🎯 **Automatic bitrate targeting** - Sets target bitrates based on video resolution
-- 🔍 **Quality optimization** - Iteratively finds optimal CRF values to hit target bitrates
-- 🎬 **Smart defaults** - Uses HEVC/x265 codec with sensible presets
+- 🔍 **Quality optimization** - Iteratively finds optimal bitrate settings to hit target bitrates
+- 🚀 **Hardware acceleration** - Uses Apple VideoToolbox for fast encoding on macOS
 - 📊 **Progress feedback** - Color-coded output with clear status messages
-- ⚡ **Fast iteration** - Uses 15-second samples to quickly find optimal settings
+- ⚡ **Fast iteration** - Uses multi-point sampling (3 samples per iteration) to quickly find optimal settings
 
 ## Current Defaults
 
-- **Codec**: HEVC (H.265) via `libx265`
+- **Codec**: HEVC (H.265) via `hevc_videotoolbox` (Apple VideoToolbox hardware acceleration)
 - **Container**: MP4
-- **Preset**: `medium`
+- **Quality control**: Bitrate mode (VideoToolbox doesn't support CRF)
 - **Audio**: Copy (no re-encoding)
 - **Target Bitrates**:
   - 2160p (4K): 11 Mbps
   - 1080p (Full HD): 8 Mbps
+- **Platform**: Optimized for macOS Sequoia
 
 ## Requirements
 
@@ -60,9 +61,9 @@ sudo dnf install ffmpeg bc
 
 3. The script will:
    - Find the video file in the current directory
-   - Analyze its resolution
+   - Analyze its resolution and duration
    - Determine the target bitrate
-   - Iteratively find the optimal CRF value
+   - Iteratively find the optimal bitrate setting by sampling from multiple points
    - Transcode the full video
    - Output: `{original_name}_transcoded.mp4`
 
@@ -73,14 +74,14 @@ sudo dnf install ffmpeg bc
 [INFO] Video resolution: 2160p
 [INFO] Target bitrate: 11 Mbps (2160p)
 [INFO] Starting quality adjustment process...
-[INFO] Transcoding 15-second sample to find optimal quality setting
-[INFO] Iteration 1: Testing with CRF=23
-[INFO] Actual bitrate: 12.5 Mbps
-[INFO] Bitrate too high, increasing CRF from 23 to 24
-[INFO] Iteration 2: Testing with CRF=24
-[INFO] Actual bitrate: 10.8 Mbps
+[INFO] Sampling from 3 points (beginning, middle, end) to find optimal bitrate setting
+[INFO] Iteration 1: Testing with bitrate=11.00 Mbps (11000 kbps)
+[INFO] Average bitrate from 3 samples: 12.5 Mbps
+[INFO] Actual bitrate too high, decreasing bitrate setting from 11000k to 9900k
+[INFO] Iteration 2: Testing with bitrate=9.90 Mbps (9900 kbps)
+[INFO] Average bitrate from 3 samples: 10.8 Mbps
 [INFO] Bitrate is within acceptable range (10% of target)
-[INFO] Optimal CRF value found: 24
+[INFO] Optimal bitrate setting found: 9900 kbps (9.90 Mbps)
 [INFO] Starting full video transcoding...
 [INFO] Transcoding complete!
 [INFO] Output file: my_video_transcoded.mp4
@@ -89,10 +90,15 @@ sudo dnf install ffmpeg bc
 ## How It Works
 
 1. **Discovery**: Finds the first video file in the current directory
-2. **Analysis**: Uses `ffprobe` to determine video resolution
+2. **Analysis**: Uses `ffprobe` to determine video resolution and duration
 3. **Targeting**: Sets target bitrate based on resolution
-4. **Optimization**: Transcodes 15-second samples at different CRF values until target bitrate is achieved (±10% tolerance)
-5. **Encoding**: Transcodes the full video using the optimal CRF value
+4. **Optimization**: 
+   - Samples from 3 points (beginning ~10%, middle ~50%, end ~90%)
+   - Transcodes 15-second samples at different bitrate settings
+   - Averages bitrates from all 3 samples
+   - Adjusts bitrate setting until actual output matches target (±10% tolerance)
+   - Maximum 10 iterations, exits with error if not converged
+5. **Encoding**: Transcodes the full video using the optimal bitrate setting
 
 ## Supported Video Formats
 
@@ -112,6 +118,8 @@ The tool automatically detects these video file extensions:
 - Must be run from the directory containing the video file
 - Uses hardcoded defaults (not yet configurable)
 - Audio is always copied (not re-encoded)
+- Optimized for macOS - VideoToolbox hardware acceleration requires macOS
+- VideoToolbox only supports bitrate mode, not CRF (quality-based encoding)
 
 ## Future Features
 
@@ -138,7 +146,18 @@ ffprobe your_video.mp4
 ```
 
 ### Transcoding takes a long time
-This is normal for high-resolution videos. The script uses the `medium` preset which balances quality and speed. For faster encoding (with lower quality), you could modify the preset in the script, but this is not yet configurable.
+This is normal for high-resolution videos. The script uses hardware acceleration via VideoToolbox, which is significantly faster than software encoding. The optimization phase samples from multiple points, which may take a few minutes, but ensures accurate bitrate targeting.
+
+### "Reached maximum iterations" error
+If the script fails to converge within 10 iterations, it may indicate that the target bitrate is not achievable with the current settings, or there's an issue with the video file. Check that the video file is valid and not corrupted.
+
+### Helper Scripts
+
+For testing and development, helper scripts are available:
+
+- **`./copy-1080p-test.sh`** - Copies the 1080p test video to the current directory
+- **`./copy-4k-test.sh`** - Copies the 4K test video to the current directory  
+- **`./cleanup-mp4.sh`** - Removes all .mp4 files from the project root directory
 
 ## Contributing
 
