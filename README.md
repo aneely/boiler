@@ -182,10 +182,10 @@ The script is organized into modular functions for better maintainability:
 - **Transcoding functions**: Sample transcoding, bitrate measurement, optimization loop, full video transcoding
 - **Main orchestration**: The `main()` function coordinates all steps
 
-This modular structure makes the code easier to understand, test, and maintain. For detailed technical information, see [CONTEXT.md](CONTEXT.md).
+This modular structure makes the code easier to understand, test, and maintain. For detailed technical information, see [PROJECT-CONTEXT.md](PROJECT-CONTEXT.md).
 
 ## Related Documentation
 
-- [CONTEXT.md](CONTEXT.md) - Technical details, architecture, and design decisions
+- [PROJECT-CONTEXT.md](PROJECT-CONTEXT.md) - Technical details, architecture, and design decisions
 - [PLAN.md](PLAN.md) - Development roadmap and future features
 

@@ -12,7 +12,7 @@ This project provides a simplified command-line interface for transcoding video 
 
 **When the user asks to "update for the next session", "remember the current state", or similar requests to preserve project state:**
 
-1. **Update CONTEXT.md** with:
+1. **Update PROJECT-CONTEXT.md** with:
    - Any new architectural changes or code organization
    - Recent improvements, bug fixes, or refactorings
    - New technical details, design decisions, or implementation notes
@@ -115,7 +115,7 @@ The script uses an iterative approach to find the optimal bitrate setting:
 - **Audio**: Copy (no re-encoding)
 - **Output naming**: `{original_name}_transcoded.mp4`
 - **Platform**: Optimized for macOS Sequoia (hardware acceleration unlocked)
-- **QuickLook compatibility**: Uses `-movflags +faststart` and `-tag:v hvc1` for macOS Finder QuickLook support
+- **QuickLook compatibility**: Uses `-movflags +faststart` for sample transcoding; both `-movflags +faststart` and `-tag:v hvc1` for final output to ensure macOS Finder QuickLook support
 
 ### Dependencies
 
@@ -132,7 +132,7 @@ boiler/
 ├── copy-4k-test.sh              # Helper: Copy 4K test video to current directory
 ├── cleanup-mp4.sh               # Helper: Remove all .mp4 files from project root
 ├── .gitignore                   # Git ignore patterns (macOS, video files, outputs)
-├── CONTEXT.md                   # Technical documentation
+├── PROJECT-CONTEXT.md           # Technical documentation
 ├── PLAN.md                      # Development roadmap
 ├── README.md                    # User documentation
 ├── testdata/                    # Test video files
@@ -182,7 +182,7 @@ The script uses two methods to determine bitrate:
 - Fixed `bc` parse errors by sanitizing all values (removing newlines/whitespace) before passing to `bc`
 - Fixed function return value corruption by redirecting logging functions to stderr
 - Added value sanitization throughout to prevent issues with `ffprobe` and `bc` outputs containing trailing newlines
-- Added QuickLook compatibility: `-movflags +faststart` and `-tag:v hvc1` flags for macOS Finder preview support
+- Added QuickLook compatibility: `-movflags +faststart` for sample transcoding; both `-movflags +faststart` and `-tag:v hvc1` for final output to ensure macOS Finder preview support
 
 ## Current Limitations
 
@@ -244,8 +244,8 @@ This is critical because `ffprobe` and `bc` outputs may contain trailing newline
 ### QuickLook Compatibility
 
 The script includes flags to ensure macOS Finder QuickLook compatibility:
-- **`-movflags +faststart`**: Moves metadata (moov atom) to the beginning of the file, allowing QuickLook to read file information immediately without scanning the entire file
-- **`-tag:v hvc1`**: Ensures proper HEVC codec tagging in the MP4 container for better compatibility with macOS QuickTime/QuickLook
+- **`-movflags +faststart`**: Moves metadata (moov atom) to the beginning of the file, allowing QuickLook to read file information immediately without scanning the entire file. Applied to both sample transcoding and final output.
+- **`-tag:v hvc1`**: Ensures proper HEVC codec tagging in the MP4 container for better compatibility with macOS QuickTime/QuickLook. Applied only to the final transcoded output (not to temporary sample files).
 
-These flags are applied to both sample transcoding and full video transcoding to ensure consistent behavior and QuickLook compatibility throughout the optimization process.
+Sample files use `-movflags +faststart` for faster bitrate measurement, while the final output includes both flags for full QuickLook compatibility.
 
