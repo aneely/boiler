@@ -54,7 +54,10 @@ The script is modularized into the following function categories:
 - `find_video_file()` - Discovers video files in the current directory
 - `get_video_resolution()` - Extracts video resolution using ffprobe
 - `get_video_duration()` - Extracts video duration using ffprobe
-- `get_source_bitrate()` - Measures source video bitrate using ffprobe or file size calculation
+- `sanitize_value()` - Sanitizes values for bc calculations (removes newlines, carriage returns, trims whitespace)
+- `measure_bitrate()` - Generic function to measure bitrate from any video file (ffprobe first, file size fallback)
+- `get_source_bitrate()` - Measures source video bitrate (wrapper around `measure_bitrate()`)
+- `is_within_tolerance()` - Checks if a bitrate is within the acceptable tolerance range (±10%)
 
 **Configuration Functions:**
 - `calculate_target_bitrate()` - Determines target bitrate based on resolution
@@ -62,7 +65,7 @@ The script is modularized into the following function categories:
 
 **Transcoding Functions:**
 - `transcode_sample()` - Transcodes a single sample from a specific point
-- `measure_sample_bitrate()` - Measures actual bitrate from a sample file
+- `measure_sample_bitrate()` - Measures actual bitrate from a sample file (wrapper around `measure_bitrate()`)
 - `find_optimal_bitrate()` - Main optimization loop that iteratively finds optimal bitrate
 - `transcode_full_video()` - Transcodes the complete video with optimal settings
 - `cleanup_samples()` - Removes temporary sample files
@@ -176,7 +179,12 @@ The script uses two methods to determine bitrate:
 
 ## Recent Improvements
 
-### Smart Pre-processing (Latest)
+### Code Refactoring (Latest)
+- **Consolidated bitrate measurement**: Created generic `measure_bitrate()` function that eliminates duplicate code between `get_source_bitrate()` and `measure_sample_bitrate()`. Both functions now call the shared implementation.
+- **Extracted tolerance checking**: Created `is_within_tolerance()` function to replace duplicate range checking logic in `main()` and `find_optimal_bitrate()`. Improves readability and maintainability.
+- **Value sanitization helper**: Added `sanitize_value()` function for consistent sanitization of values before bc calculations. Used throughout the script for cleaner, more maintainable code.
+
+### Smart Pre-processing
 - Added early exit check: If source video is already within ±10% of target bitrate, the script exits immediately with a helpful message, avoiding unnecessary transcoding work
 - Uses the same tolerance logic (±10%) and comparison method as the optimization loop for consistency
 - `get_source_bitrate()` function measures source video bitrate using the same approach as sample measurement (ffprobe first, file size fallback)

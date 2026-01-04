@@ -89,26 +89,53 @@ get_video_duration() {
     echo "$duration"
 }
 
-# Get source video bitrate
-get_source_bitrate() {
-    local video_file="$1"
-    local video_duration="$2"
+# Sanitize value for bc calculations (remove newlines, carriage returns, and trim whitespace)
+sanitize_value() {
+    echo "$1" | tr -d '\n\r' | xargs
+}
+
+# Measure bitrate from a video file
+# Arguments: file_path, duration_seconds
+# Returns: bitrate in bits per second, or empty string if unavailable
+measure_bitrate() {
+    local file_path="$1"
+    local duration="$2"
     
     # Try to get bitrate from ffprobe first
-    local bitrate_bps=$(ffprobe -v error -select_streams v:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$video_file" 2>/dev/null | head -1 | tr -d '\n\r')
+    local bitrate_bps=$(ffprobe -v error -select_streams v:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$file_path" 2>/dev/null | head -1 | tr -d '\n\r')
     
     # If bitrate is not available, use file size calculation as fallback
     if [ -z "$bitrate_bps" ] || [ "$bitrate_bps" = "N/A" ]; then
-        local file_size_bytes=$(stat -f%z "$video_file" 2>/dev/null || stat -c%s "$video_file" 2>/dev/null | tr -d '\n\r')
-        # Ensure video_duration is clean for bc
-        video_duration=$(echo "$video_duration" | tr -d '\n\r')
-        bitrate_bps=$(echo "scale=0; ($file_size_bytes * 8) / $video_duration" | bc | tr -d '\n\r')
+        local file_size_bytes=$(stat -f%z "$file_path" 2>/dev/null || stat -c%s "$file_path" 2>/dev/null | tr -d '\n\r')
+        duration=$(sanitize_value "$duration")
+        bitrate_bps=$(echo "scale=0; ($file_size_bytes * 8) / $duration" | bc | tr -d '\n\r')
     fi
     
     if [ -n "$bitrate_bps" ] && [ "$bitrate_bps" != "N/A" ]; then
         echo "$bitrate_bps"
     else
         echo ""
+    fi
+}
+
+# Get source video bitrate
+get_source_bitrate() {
+    measure_bitrate "$1" "$2"
+}
+
+# Check if bitrate is within tolerance range
+# Arguments: bitrate_bps, lower_bound_bps, upper_bound_bps
+# Returns: 0 if within range, 1 otherwise
+is_within_tolerance() {
+    local bitrate_bps=$(sanitize_value "$1")
+    local lower_bound=$(sanitize_value "$2")
+    local upper_bound=$(sanitize_value "$3")
+    
+    if (( $(echo "$bitrate_bps >= $lower_bound" | bc -l) )) && \
+       (( $(echo "$bitrate_bps <= $upper_bound" | bc -l) )); then
+        return 0
+    else
+        return 1
     fi
 }
 
@@ -186,25 +213,7 @@ transcode_sample() {
 
 # Measure bitrate from a sample file
 measure_sample_bitrate() {
-    local sample_file="$1"
-    local sample_duration="$2"
-    
-    # Try to get bitrate from ffprobe first
-    local bitrate_bps=$(ffprobe -v error -select_streams v:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$sample_file" 2>/dev/null | head -1 | tr -d '\n\r')
-    
-    # If bitrate is not available, use file size calculation as fallback
-    if [ -z "$bitrate_bps" ] || [ "$bitrate_bps" = "N/A" ]; then
-        local file_size_bytes=$(stat -f%z "$sample_file" 2>/dev/null || stat -c%s "$sample_file" 2>/dev/null | tr -d '\n\r')
-        # Ensure sample_duration is clean for bc
-        sample_duration=$(echo "$sample_duration" | tr -d '\n\r')
-        bitrate_bps=$(echo "scale=0; ($file_size_bytes * 8) / $sample_duration" | bc | tr -d '\n\r')
-    fi
-    
-    if [ -n "$bitrate_bps" ] && [ "$bitrate_bps" != "N/A" ]; then
-        echo "$bitrate_bps"
-    else
-        echo ""
-    fi
+    measure_bitrate "$1" "$2"
 }
 
 # Find optimal bitrate setting through iterative sampling
@@ -241,8 +250,8 @@ find_optimal_bitrate() {
             sample_index=$((sample_index + 1))
             local sample_file_point="${video_file%.*}_sample_${sample_index}.mp4"
             
-            # Clean sample_start for use (remove any whitespace/newlines)
-            sample_start=$(echo "$sample_start" | tr -d '\n\r' | xargs)
+            # Clean sample_start for use
+            sample_start=$(sanitize_value "$sample_start")
             
             # Transcode sample
             transcode_sample "$video_file" "$sample_start" "$sample_duration" "$test_bitrate_kbps" "$sample_file_point"
@@ -251,9 +260,9 @@ find_optimal_bitrate() {
             local sample_bitrate_bps=$(measure_sample_bitrate "$sample_file_point" "$sample_duration")
             
             if [ -n "$sample_bitrate_bps" ]; then
-                # Clean values for bc calculation (remove newlines, carriage returns, and trim whitespace)
-                total_bitrate_bps=$(echo "$total_bitrate_bps" | tr -d '\n\r' | xargs)
-                sample_bitrate_bps=$(echo "$sample_bitrate_bps" | tr -d '\n\r' | xargs)
+                # Clean values for bc calculation
+                total_bitrate_bps=$(sanitize_value "$total_bitrate_bps")
+                sample_bitrate_bps=$(sanitize_value "$sample_bitrate_bps")
                 # Add bitrates using bc
                 total_bitrate_bps=$(echo "$total_bitrate_bps + $sample_bitrate_bps" | bc | tr -d '\n\r' | xargs)
                 sample_count=$((sample_count + 1))
@@ -269,7 +278,7 @@ find_optimal_bitrate() {
         fi
         
         # Calculate average bitrate (clean values for bc)
-        total_bitrate_bps=$(echo "$total_bitrate_bps" | tr -d '\n\r' | xargs)
+        total_bitrate_bps=$(sanitize_value "$total_bitrate_bps")
         local actual_bitrate_bps
         local actual_bitrate_mbps
         if [ "$sample_count" -gt 0 ]; then
@@ -281,12 +290,8 @@ find_optimal_bitrate() {
         fi
         info "Average bitrate from $sample_count samples: ${actual_bitrate_mbps} Mbps"
         
-        # Check if within acceptable range (clean bounds for comparison)
-        lower_bound=$(echo "$lower_bound" | tr -d '\n\r' | xargs)
-        upper_bound=$(echo "$upper_bound" | tr -d '\n\r' | xargs)
-        actual_bitrate_bps=$(echo "$actual_bitrate_bps" | tr -d '\n\r' | xargs)
-        if (( $(echo "$actual_bitrate_bps >= $lower_bound" | bc -l) )) && \
-           (( $(echo "$actual_bitrate_bps <= $upper_bound" | bc -l) )); then
+        # Check if within acceptable range
+        if is_within_tolerance "$actual_bitrate_bps" "$lower_bound" "$upper_bound"; then
             info "Bitrate is within acceptable range (10% of target)"
             break
         fi
@@ -364,15 +369,8 @@ main() {
     SOURCE_BITRATE_BPS=$(get_source_bitrate "$VIDEO_FILE" "$VIDEO_DURATION")
     
     if [ -n "$SOURCE_BITRATE_BPS" ]; then
-        # Clean values for comparison (same logic as in find_optimal_bitrate)
-        SOURCE_BITRATE_BPS=$(echo "$SOURCE_BITRATE_BPS" | tr -d '\n\r' | xargs)
-        LOWER_BOUND=$(echo "$LOWER_BOUND" | tr -d '\n\r' | xargs)
-        UPPER_BOUND=$(echo "$UPPER_BOUND" | tr -d '\n\r' | xargs)
-        
-        # Check if within acceptable range (same logic as in find_optimal_bitrate)
-        if (( $(echo "$SOURCE_BITRATE_BPS >= $LOWER_BOUND" | bc -l) )) && \
-           (( $(echo "$SOURCE_BITRATE_BPS <= $UPPER_BOUND" | bc -l) )); then
-            SOURCE_BITRATE_MBPS=$(echo "scale=2; $SOURCE_BITRATE_BPS / 1000000" | bc | tr -d '\n\r' | xargs)
+        if is_within_tolerance "$SOURCE_BITRATE_BPS" "$LOWER_BOUND" "$UPPER_BOUND"; then
+            SOURCE_BITRATE_MBPS=$(echo "scale=2; $(sanitize_value "$SOURCE_BITRATE_BPS") / 1000000" | bc | tr -d '\n\r' | xargs)
             info "Source video bitrate: ${SOURCE_BITRATE_MBPS} Mbps"
             info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps (acceptable range: ±10%)"
             info "Source video is already within acceptable range (10% of target). No transcoding needed."
