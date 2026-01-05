@@ -77,7 +77,10 @@ Create a simplified command-line tool for video transcoding on macOS that:
   - Allow detection of the original source file
   - Support the detection feature above
   - Be consistent and predictable for automation
-- [ ] **Rename files to include quality setting**: Include the quality value (e.g., `-q:v 45`) in the output filename so users can identify which quality setting was used for each transcoded file. Example: `video_q45_transcoded.mp4`
+- [x] **Rename files to include bitrate information**: Files are now renamed to include their actual bitrate in the filename:
+  - **Transcoded files**: `{base}.fmpg.{actual_bitrate}.Mbps.{ext}` (e.g., `video.fmpg.10.25.Mbps.mp4`)
+  - **Files below target**: `{base}.orig.{actual_bitrate}.Mbps.{ext}` (e.g., `video.orig.2.90.Mbps.mp4`)
+  - Actual bitrate is measured after transcoding and included with 2 decimal places for precision
 
 ### Quality Control and Optimization
 

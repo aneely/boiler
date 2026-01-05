@@ -500,12 +500,26 @@ main() {
             info "Source video bitrate: ${SOURCE_BITRATE_MBPS} Mbps"
             info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps"
             info "Source video is already below target bitrate. No transcoding needed."
+            
+            # Rename file to include actual bitrate: {base}.orig.{bitrate}.Mbps.{ext}
+            local base_name="${VIDEO_FILE%.*}"
+            local file_extension="${VIDEO_FILE##*.}"
+            local renamed_file="${base_name}.orig.${SOURCE_BITRATE_MBPS}.Mbps.${file_extension}"
+            
+            # Only rename if the filename would be different
+            if [ "$VIDEO_FILE" != "$renamed_file" ]; then
+                mv "$VIDEO_FILE" "$renamed_file"
+                info "Renamed file to: $renamed_file"
+            fi
+            
             exit 0
         fi
     fi
     
-    # Generate output filename
-    OUTPUT_FILE="${VIDEO_FILE%.*}_transcoded.mp4"
+    # Generate temporary output filename for transcoding
+    local base_name="${VIDEO_FILE%.*}"
+    local file_extension="${VIDEO_FILE##*.}"
+    local temp_output_file="${base_name}_temp_transcode.${file_extension}"
     
     # Calculate sample points
     calculate_sample_points "$VIDEO_DURATION"
@@ -516,14 +530,32 @@ main() {
     info "Optimal quality setting found: ${OPTIMAL_QUALITY} (higher = higher quality/bitrate)"
     info "Starting full video transcoding with constant quality mode..."
     
-    # Transcode full video
-    transcode_full_video "$VIDEO_FILE" "$OUTPUT_FILE" "$OPTIMAL_QUALITY"
+    # Transcode full video to temporary file
+    transcode_full_video "$VIDEO_FILE" "$temp_output_file" "$OPTIMAL_QUALITY"
+    
+    # Measure actual bitrate of transcoded file
+    local actual_bitrate_bps=$(measure_bitrate "$temp_output_file" "$VIDEO_DURATION")
+    if [ -z "$actual_bitrate_bps" ]; then
+        error "Could not measure bitrate of transcoded file"
+        rm -f "$temp_output_file"
+        exit 1
+    fi
+    
+    # Calculate actual bitrate in Mbps (with 2 decimal places)
+    local actual_bitrate_mbps=$(echo "scale=2; $(sanitize_value "$actual_bitrate_bps") / 1000000" | bc | tr -d '\n\r' | xargs)
+    
+    # Generate final output filename: {base}.fmpg.{actual_bitrate}.Mbps.{ext}
+    OUTPUT_FILE="${base_name}.fmpg.${actual_bitrate_mbps}.Mbps.${file_extension}"
+    
+    # Rename temporary file to final filename
+    mv "$temp_output_file" "$OUTPUT_FILE"
     
     # Clean up any remaining sample files
     cleanup_samples "$VIDEO_FILE"
     
     info "Transcoding complete!"
     info "Output file: $OUTPUT_FILE"
+    info "Actual bitrate: ${actual_bitrate_mbps} Mbps"
 }
 
 # Run main function

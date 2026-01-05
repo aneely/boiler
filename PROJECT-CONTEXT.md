@@ -142,7 +142,11 @@ The script uses an iterative approach to find the optimal quality setting using 
 - **Quality control**: Constant quality mode (`-q:v`) - Iteratively adjusts quality value (0-100, higher = higher quality/bitrate) to hit target bitrate
 - **Container**: MP4
 - **Audio**: Copy (no re-encoding)
-- **Output naming**: `{original_name}_transcoded.mp4`
+- **Output naming**: 
+  - **Transcoded files**: `{base}.fmpg.{actual_bitrate}.Mbps.{ext}` (e.g., `video.fmpg.10.25.Mbps.mp4`)
+    - Actual bitrate is measured after transcoding and included in filename with 2 decimal places
+  - **Files below target**: `{base}.orig.{actual_bitrate}.Mbps.{ext}` (e.g., `video.orig.2.90.Mbps.mp4`)
+    - Files already below target bitrate are renamed to include their actual bitrate without transcoding
 - **Platform**: Optimized for macOS Sequoia (hardware acceleration unlocked)
 - **QuickLook compatibility**: Uses `-movflags +faststart` for sample transcoding; both `-movflags +faststart` and `-tag:v hvc1` for final output to ensure macOS Finder QuickLook support
 
@@ -249,13 +253,13 @@ The script uses two methods to determine bitrate:
 ### Future Enhancements (See PLAN.md)
 
 - Configurable constant quality start ranges
-- Rename files to include quality setting in filename
 
 ### Smart Pre-processing
 - Added early exit check: If source video is already within ±10% of target bitrate OR if source bitrate is below target, the script exits immediately with a helpful message, avoiding unnecessary transcoding work
 - Uses the same tolerance logic (±10%) and comparison method as the optimization loop for consistency
 - `get_source_bitrate()` function measures source video bitrate using the same approach as sample measurement (ffprobe first, file size fallback)
 - Handles both cases: videos already at target (within tolerance) and videos already more compressed than target (below target bitrate)
+- **Automatic renaming for files below target**: When a source file is below target bitrate, it is automatically renamed to include its actual bitrate using the format `{base}.orig.{bitrate}.Mbps.{ext}` (e.g., `video.orig.2.90.Mbps.mp4`). This provides consistent filename formatting even for files that don't need transcoding.
 
 ### Modularization
 - Refactored script into focused functions for better maintainability
