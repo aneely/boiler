@@ -16,6 +16,12 @@ This project provides a simplified command-line interface for transcoding video 
 - Allow the user to discuss, ask questions, and choose which approach they prefer
 - Only implement changes after the user explicitly requests them
 
+**When the user asks informational questions (e.g., "Is there a way to...", "How would I...", "What would happen if..."):**
+- **ONLY provide an explanation or answer** - do NOT implement anything
+- Explain the approach, solution, or answer to their question
+- Wait for explicit request like "implement this", "add this", "make this change" before making any code changes
+- Questions are for learning and discussion, not automatic implementation
+
 This ensures the user maintains control over the development direction and can make informed decisions about which solutions best fit their needs.
 
 ### Documentation Update Directive

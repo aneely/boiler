@@ -11,6 +11,21 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# Cleanup function: kill entire process group on exit/interrupt
+# This automatically kills all child processes (including FFmpeg) without tracking PIDs
+# The -- -$$ syntax means "kill process group of $$ (our PID)"
+cleanup_on_exit() {
+    # Kill the entire process group (all child processes)
+    kill -- -$$ 2>/dev/null || true
+    # Also clean up sample files if VIDEO_FILE is set
+    if [ -n "${VIDEO_FILE:-}" ]; then
+        rm -f "${VIDEO_FILE%.*}_sample"*.mp4 2>/dev/null || true
+    fi
+}
+
+# Set up signal handlers to kill process group on exit/interrupt
+trap cleanup_on_exit EXIT INT TERM
+
 # Function to print colored messages (to stderr so they don't interfere with function return values)
 info() {
     echo -e "${GREEN}[INFO]${NC} $1" >&2
@@ -192,6 +207,7 @@ calculate_sample_points() {
 }
 
 # Transcode a sample from a specific point in the video
+# Uses input seeking (-ss before -i) for faster seeking performance
 transcode_sample() {
     local video_file="$1"
     local sample_start="$2"
@@ -199,8 +215,9 @@ transcode_sample() {
     local bitrate_kbps="$4"
     local output_file="$5"
     
-    ffmpeg -y -i "$video_file" \
-        -ss "$sample_start" \
+    # Input seeking: -ss before -i makes seeking much faster, especially for later samples
+    ffmpeg -y -ss "$sample_start" \
+        -i "$video_file" \
         -t $sample_duration \
         -c:v hevc_videotoolbox \
         -b:v ${bitrate_kbps}k \
