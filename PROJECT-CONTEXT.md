@@ -58,8 +58,8 @@ The tool is implemented as a modular bash script (`boiler.sh`) organized into fo
 2. **Analyzes video properties** (resolution, duration) using `ffprobe`
 3. **Determines target bitrate** based on resolution
 4. **Checks if source is already optimized** - Short-circuits if source video is already within ±10% of target bitrate
-5. **Iteratively finds optimal bitrate setting** by transcoding samples from multiple points (if needed)
-6. **Transcodes the full video** using the optimal settings
+5. **Iteratively finds optimal quality setting** using constant quality mode (`-q:v`) by transcoding samples from multiple points and adjusting quality to hit target bitrate
+6. **Transcodes the full video** using the optimal quality setting
 
 #### Code Organization
 
@@ -80,10 +80,10 @@ The script is modularized into the following function categories:
 - `calculate_sample_points()` - Calculates sample points (10%, 50%, 90%) with bounds checking
 
 **Transcoding Functions:**
-- `transcode_sample()` - Transcodes a single sample from a specific point
+- `transcode_sample()` - Transcodes a single sample from a specific point using constant quality mode (`-q:v`)
 - `measure_sample_bitrate()` - Measures actual bitrate from a sample file (wrapper around `measure_bitrate()`)
-- `find_optimal_bitrate()` - Main optimization loop that iteratively finds optimal bitrate
-- `transcode_full_video()` - Transcodes the complete video with optimal settings
+- `find_optimal_quality()` - Main optimization loop that iteratively finds optimal quality setting by adjusting `-q:v` to hit target bitrate
+- `transcode_full_video()` - Transcodes the complete video with optimal quality setting
 - `cleanup_samples()` - Removes temporary sample files
 
 **Main Orchestration:**
@@ -113,26 +113,27 @@ The script is modularized into the following function categories:
 
 #### Quality Optimization Algorithm
 
-The script uses an iterative approach to find the optimal bitrate setting:
+The script uses an iterative approach to find the optimal quality setting using constant quality mode:
 
 1. **Pre-check**: Before starting optimization, checks if source video is already within ±10% of target bitrate. If so, exits early with a message indicating no transcoding is needed.
-2. **Initial bitrate**: Starts with the target bitrate as the initial guess
+2. **Initial quality**: Starts with quality value 30 (VideoToolbox `-q:v` scale: 0-100, higher = higher quality/bitrate)
 3. **Multi-point sampling**: Creates 15-second samples from 3 points in the video:
    - Beginning (~10% through video)
    - Middle (~50% through video)
    - End (~90% through video)
 4. **Bitrate measurement**: Averages bitrates from all 3 samples using `ffprobe` or file size calculation
 5. **Adjustment logic**:
-   - If actual bitrate too low: Increase bitrate setting by 10%
-   - If actual bitrate too high: Decrease bitrate setting by 10%
+   - If actual bitrate too low: Increase quality value by 2 (trend upwards to get higher bitrate)
+   - If actual bitrate too high: Decrease quality value by 2 (trend downwards to get lower bitrate)
+   - Quality value bounds: 0 (lowest quality/bitrate) to 100 (highest quality/bitrate)
 6. **Convergence**: Stops when actual bitrate is within ±10% of target
-7. **Safety limits**: Maximum 10 iterations, exits with error if not converged
+7. **No iteration limit**: Loop continues indefinitely until convergence or quality bounds are reached
 
 #### Encoding Settings
 
 **Current defaults:**
 - **Codec**: HEVC (H.265) via `hevc_videotoolbox` (Apple VideoToolbox hardware acceleration)
-- **Quality control**: Bitrate mode (`-b:v`) - VideoToolbox doesn't support CRF
+- **Quality control**: Constant quality mode (`-q:v`) - Iteratively adjusts quality value (0-100, higher = higher quality/bitrate) to hit target bitrate
 - **Container**: MP4
 - **Audio**: Copy (no re-encoding)
 - **Output naming**: `{original_name}_transcoded.mp4`
@@ -202,33 +203,35 @@ The script uses two methods to determine bitrate:
 
 ## Current Session Status
 
-### Tested but Not Yet Committed
+### Recent Major Changes (Current Implementation)
 
-**Performance Optimizations (tested, working, needs implementation):**
-- **Adaptive sample duration based on file size**: Tested implementation that adjusts sample duration based on file size thresholds:
-  - >10GB: 5 seconds per sample
-  - >5GB: 7 seconds per sample
-  - >2GB: 10 seconds per sample
-  - ≤2GB: 15 seconds per sample (default)
-  - This significantly reduces iteration time for large 2160p files
-  - Implementation: Modify `calculate_sample_points()` to accept file size parameter and calculate adaptive duration
+**Switched to Constant Quality Mode:**
+- Changed from bitrate mode (`-b:v`) to constant quality mode (`-q:v`) to match HandBrake's approach
+- Uses VideoToolbox's `-q:v` parameter (0-100 scale, higher = higher quality/bitrate)
+- Iteratively adjusts quality value to hit target bitrate, similar to CRF/RF mode behavior
+- This approach adapts bitrate to content complexity, reducing blocky artifacts
 
-- **Input seeking optimization**: Tested change to move `-ss` flag before `-i` in `transcode_sample()` function:
-  - Changed from: `ffmpeg -y -i "$video_file" -ss "$sample_start" ...`
-  - Changed to: `ffmpeg -y -ss "$sample_start" -i "$video_file" ...`
-  - This uses input seeking instead of output seeking, making all three samples roughly the same speed
-  - **Known issue**: This change causes FFmpeg child processes to not be properly cleaned up when script is interrupted (Ctrl+C)
+**Optimization Loop Improvements:**
+- Removed iteration limit safeguard - loop continues until convergence or quality bounds reached
+- Fixed quality adjustment logic to trend correctly:
+  - Bitrate too low → increase quality value (trend upwards)
+  - Bitrate too high → decrease quality value (trend downwards)
+- Quality step size: 2 (adjustable)
+- Starting quality value: 30 (adjustable)
+
+**Filter Changes:**
+- Removed deblocking filters - relying on constant quality mode to handle quality/artifacts
 
 ### Known Issues
 
-- **FFmpeg processes not cleaned up on interrupt**: When using input seeking (`-ss` before `-i`), interrupting the script (Ctrl+C) leaves FFmpeg child processes running. Signal handling needs to be implemented to properly kill child processes on interrupt.
+- **FFmpeg processes not cleaned up on interrupt**: When using input seeking (`-ss` before `-i`), interrupting the script (Ctrl+C) leaves FFmpeg child processes running. Signal handling is implemented but may need verification.
 - **Sample duration**: Currently hardcoded to 15 seconds. For large 2160p files, this causes very long iteration times (each sample taking minutes to transcode).
 
-### Next Steps
+### Future Enhancements (See PLAN.md)
 
-1. Implement adaptive sample duration based on file size (tested, working)
-2. Implement input seeking optimization (tested, working)
-3. Add signal handling to properly clean up FFmpeg processes on interrupt (needed to fix issue with input seeking)
+- Configurable constant quality start ranges
+- Rename files to include quality setting in filename
+- Lengthen optimization sample sizes (configurable or adaptive)
 
 ### Smart Pre-processing
 - Added early exit check: If source video is already within ±10% of target bitrate, the script exits immediately with a helpful message, avoiding unnecessary transcoding work
@@ -262,9 +265,9 @@ This is a proof-of-concept project focused on iterating over ergonomics and usab
 
 ## Design Decisions
 
-### Why bitrate mode instead of CRF?
+### Why constant quality mode (`-q:v`) instead of bitrate mode?
 
-VideoToolbox HEVC encoder (used for hardware acceleration on macOS) doesn't support CRF mode - it only supports bitrate mode (`-b:v`). The iterative approach adjusts the bitrate setting until the actual output bitrate matches the target.
+VideoToolbox HEVC encoder supports constant quality mode via `-q:v` parameter (0-100 scale). This approach is similar to HandBrake's RF mode and CRF mode in software encoders. The iterative approach adjusts the quality value until the actual output bitrate matches the target, allowing the encoder to adapt bitrate to content complexity. This reduces blocky artifacts compared to fixed bitrate encoding.
 
 ### Why multi-point sampling?
 
@@ -282,9 +285,9 @@ Allows for natural variation in bitrate while still achieving the target. Too st
 
 Hardware acceleration on macOS Sequoia provides significantly faster encoding while maintaining quality. VideoToolbox is optimized for Apple Silicon and Intel Macs with hardware HEVC support.
 
-### Why 10 iteration limit?
+### Why no iteration limit?
 
-Prevents infinite loops if convergence isn't possible. The script exits with an error if it can't find optimal settings within 10 iterations, making failures explicit rather than silently continuing.
+The optimization loop continues until convergence (bitrate within ±10% tolerance) or quality bounds are reached (0 or 100). This allows the algorithm to find the optimal quality setting regardless of how many iterations it takes. Quality bounds prevent infinite loops by capping the adjustment range.
 
 ### Why modularize into functions?
 

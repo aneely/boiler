@@ -19,21 +19,22 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Resolution-based target bitrate selection
   - 2160p: 11 Mbps
   - 1080p: 8 Mbps
-- [x] Iterative bitrate optimization algorithm
+- [x] Iterative quality optimization algorithm using constant quality mode (`-q:v`)
 - [x] Multi-point sampling (beginning, middle, end) for accurate bitrate prediction
 - [x] HEVC via Apple VideoToolbox (hardware-accelerated on macOS)
 - [x] MP4 container format
 - [x] Audio stream copying (no re-encoding)
 - [x] Color-coded output messages
 - [x] Error handling and validation
-- [x] 10 iteration limit with error on failure to converge
 - [x] Early exit check: Skip transcoding if source video is already within ±10% of target bitrate
 - [x] Helper scripts for testing (copy test videos, cleanup)
 
 ### Current Defaults
 
 - **Codec**: HEVC (H.265) via `hevc_videotoolbox` (hardware-accelerated)
-- **Quality control**: Bitrate mode (`-b:v`) - VideoToolbox doesn't support CRF
+- **Quality control**: Constant quality mode (`-q:v`) - Iteratively adjusts quality value (0-100, higher = higher quality/bitrate) to hit target bitrate
+- **Starting quality**: 30 (adjustable)
+- **Quality step size**: 2 (adjustable)
 - **Container**: MP4
 - **Audio**: Copy (passthrough)
 - **Target Bitrates**:
@@ -50,12 +51,12 @@ Create a simplified command-line tool for video transcoding on macOS that:
 ### Known Issues / Recent Changes
 
 - **macOS-only**: Currently only supports macOS due to VideoToolbox hardware acceleration dependency. Cross-platform support may be added in the future.
-- **VideoToolbox limitation**: VideoToolbox HEVC only supports bitrate mode, not CRF. The algorithm was changed from CRF-based to bitrate-based optimization.
+- **Constant quality mode**: Switched from bitrate mode (`-b:v`) to constant quality mode (`-q:v`) to match HandBrake's approach and reduce blocky artifacts. Quality value (0-100) is iteratively adjusted to hit target bitrate.
 - **Multi-point sampling**: Implemented to address issue where single sample from beginning didn't accurately predict full video bitrate.
-- **Iteration limit**: Reduced from 20 to 10 iterations with error exit to prevent infinite loops.
-- **Code refactoring**: Consolidated duplicate bitrate measurement logic into generic `measure_bitrate()` function. Extracted tolerance checking into `is_within_tolerance()` helper. Added `sanitize_value()` helper for consistent value sanitization.
+- **No iteration limit**: Removed iteration limit safeguard - loop continues until convergence or quality bounds (0-100) are reached.
+- **Code refactoring**: Consolidated duplicate bitrate measurement logic into generic `measure_bitrate()` function. Extracted tolerance checking into `is_within_tolerance()` helper. Added `sanitize_value()` helper for consistent value sanitization. Renamed `find_optimal_bitrate()` to `find_optimal_quality()` to reflect constant quality mode.
 - **Performance issue with large files**: Sample duration is hardcoded to 15 seconds, causing very long iteration times for large 2160p files. Adaptive sample duration based on file size has been tested and works well, but needs to be implemented.
-- **FFmpeg process cleanup**: When using input seeking (`-ss` before `-i`), interrupting the script leaves FFmpeg child processes running. Signal handling needs to be implemented.
+- **FFmpeg process cleanup**: Signal handling implemented to kill process group on interrupt, but may need verification.
 
 ## Future Enhancements
 
@@ -76,3 +77,9 @@ Create a simplified command-line tool for video transcoding on macOS that:
   - Allow detection of the original source file
   - Support the detection feature above
   - Be consistent and predictable for automation
+- [ ] **Rename files to include quality setting**: Include the quality value (e.g., `-q:v 45`) in the output filename so users can identify which quality setting was used for each transcoded file. Example: `video_q45_transcoded.mp4`
+
+### Quality Control and Optimization
+
+- [ ] **Configurable constant quality start ranges**: Allow users to specify custom starting quality values or ranges for the optimization loop, rather than always starting at a fixed value (currently 30). This would help optimize for different use cases or content types.
+- [ ] **Lengthen optimization sample sizes**: Make the sample duration configurable or adaptive. Currently hardcoded to 15 seconds per sample. Longer samples would provide more accurate bitrate predictions but take longer to process. Could be made user-configurable or adaptive based on video duration/complexity.

@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # FFmpeg transcoding wrapper with automatic quality adjustment
-# Transcodes video to target bitrate using HEVC via Apple VideoToolbox (hardware-accelerated)
+# Transcodes video using constant quality mode (-q:v) with HEVC via Apple VideoToolbox (hardware-accelerated)
+# Iteratively adjusts quality setting to achieve target bitrate
 
 set -e
 
@@ -212,15 +213,16 @@ transcode_sample() {
     local video_file="$1"
     local sample_start="$2"
     local sample_duration="$3"
-    local bitrate_kbps="$4"
+    local quality_value="$4"
     local output_file="$5"
     
     # Input seeking: -ss before -i makes seeking much faster, especially for later samples
+    # -q:v: Constant quality mode (0-100, higher = higher quality/bitrate)
     ffmpeg -y -ss "$sample_start" \
         -i "$video_file" \
         -t $sample_duration \
         -c:v hevc_videotoolbox \
-        -b:v ${bitrate_kbps}k \
+        -q:v ${quality_value} \
         -c:a copy \
         -movflags +faststart \
         -f mp4 \
@@ -233,8 +235,9 @@ measure_sample_bitrate() {
     measure_bitrate "$1" "$2"
 }
 
-# Find optimal bitrate setting through iterative sampling
-find_optimal_bitrate() {
+# Find optimal quality setting through iterative sampling
+# Uses constant quality mode (-q:v) and adjusts quality to hit target bitrate
+find_optimal_quality() {
     local video_file="$1"
     local target_bitrate_bps="$2"
     local lower_bound="$3"
@@ -244,19 +247,19 @@ find_optimal_bitrate() {
     local sample_start_3="$7"
     local sample_duration="$8"
     
-    local bitrate_step_percent=10
-    local max_iterations=10
+    local quality_step=2
     local iteration=0
-    local target_bitrate_kbps=$((target_bitrate_bps / 1000))
-    local test_bitrate_kbps=$target_bitrate_kbps
+    # Start with a reasonable quality value
+    # VideoToolbox -q:v scale: higher value = higher quality = higher bitrate
+    # 30 is a good starting point
+    local test_quality=30
     
     info "Starting quality adjustment process..."
-    info "Sampling from 3 points (beginning, middle, end) to find optimal bitrate setting"
+    info "Using constant quality mode (-q:v), sampling from 3 points (beginning, middle, end) to find optimal quality setting"
     
-    while [ $iteration -lt $max_iterations ]; do
+    while true; do
         iteration=$((iteration + 1))
-        local test_bitrate_mbps=$(echo "scale=2; $test_bitrate_kbps / 1000" | bc | tr -d '\n\r')
-        info "Iteration $iteration: Testing with bitrate=${test_bitrate_mbps} Mbps (${test_bitrate_kbps} kbps)"
+        info "Iteration $iteration: Testing with quality=${test_quality} (higher = higher quality/bitrate)"
         
         # Sample from multiple points and average the bitrates
         local total_bitrate_bps=0
@@ -270,8 +273,8 @@ find_optimal_bitrate() {
             # Clean sample_start for use
             sample_start=$(sanitize_value "$sample_start")
             
-            # Transcode sample
-            transcode_sample "$video_file" "$sample_start" "$sample_duration" "$test_bitrate_kbps" "$sample_file_point"
+            # Transcode sample with quality setting
+            transcode_sample "$video_file" "$sample_start" "$sample_duration" "$test_quality" "$sample_file_point"
             
             # Measure bitrate
             local sample_bitrate_bps=$(measure_sample_bitrate "$sample_file_point" "$sample_duration")
@@ -313,39 +316,41 @@ find_optimal_bitrate() {
             break
         fi
         
-        # Adjust bitrate setting based on actual output
-        local old_bitrate_kbps=$test_bitrate_kbps
+        # Adjust quality setting based on actual output bitrate
+        # VideoToolbox -q:v scale: higher value = higher quality = higher bitrate
+        # If bitrate too low: increase quality value (trend upwards)
+        # If bitrate too high: decrease quality value (trend downwards)
+        local old_quality=$test_quality
         if (( $(echo "$actual_bitrate_bps < $lower_bound" | bc -l) )); then
-            # Actual bitrate too low, increase bitrate setting
-            test_bitrate_kbps=$(echo "scale=0; $test_bitrate_kbps * (1 + $bitrate_step_percent / 100)" | bc | tr -d '\n\r' | xargs | cut -d. -f1)
-            info "Actual bitrate too low, increasing bitrate setting from ${old_bitrate_kbps}k to ${test_bitrate_kbps}k"
-        else
-            # Actual bitrate too high, decrease bitrate setting
-            test_bitrate_kbps=$(echo "scale=0; $test_bitrate_kbps * (1 - $bitrate_step_percent / 100)" | bc | tr -d '\n\r' | xargs | cut -d. -f1)
-            if [ $test_bitrate_kbps -lt 100 ]; then
-                test_bitrate_kbps=100  # Minimum 100 kbps
+            # Actual bitrate too low, need higher quality (increase quality value)
+            test_quality=$((test_quality + quality_step))
+            if [ $test_quality -gt 100 ]; then
+                test_quality=100  # Maximum quality value (highest quality/bitrate)
             fi
-            info "Actual bitrate too high, decreasing bitrate setting from ${old_bitrate_kbps}k to ${test_bitrate_kbps}k"
+            info "Actual bitrate too low, increasing quality value from ${old_quality} to ${test_quality} (trending upwards)"
+        else
+            # Actual bitrate too high, need lower quality (decrease quality value)
+            test_quality=$((test_quality - quality_step))
+            if [ $test_quality -lt 0 ]; then
+                test_quality=0  # Minimum quality value (lowest quality/bitrate)
+            fi
+            info "Actual bitrate too high, decreasing quality value from ${old_quality} to ${test_quality} (trending downwards)"
         fi
     done
     
-    if [ $iteration -ge $max_iterations ]; then
-        error "Reached maximum iterations ($max_iterations). Failed to find optimal bitrate setting."
-        exit 1
-    fi
-    
-    echo "$test_bitrate_kbps"
+    echo "$test_quality"
 }
 
 # Transcode full video with optimal settings
 transcode_full_video() {
     local video_file="$1"
     local output_file="$2"
-    local bitrate_kbps="$3"
+    local quality_value="$3"
     
+    # -q:v: Constant quality mode (0-100, higher = higher quality/bitrate)
     ffmpeg -i "$video_file" \
         -c:v hevc_videotoolbox \
-        -b:v ${bitrate_kbps}k \
+        -q:v ${quality_value} \
         -c:a copy \
         -movflags +faststart \
         -tag:v hvc1 \
@@ -401,15 +406,14 @@ main() {
     # Calculate sample points
     calculate_sample_points "$VIDEO_DURATION"
     
-    # Find optimal bitrate
-    OPTIMAL_BITRATE_KBPS=$(find_optimal_bitrate "$VIDEO_FILE" "$TARGET_BITRATE_BPS" "$LOWER_BOUND" "$UPPER_BOUND" "$SAMPLE_START_1" "$SAMPLE_START_2" "$SAMPLE_START_3" "$SAMPLE_DURATION")
+    # Find optimal quality setting (using constant quality mode)
+    OPTIMAL_QUALITY=$(find_optimal_quality "$VIDEO_FILE" "$TARGET_BITRATE_BPS" "$LOWER_BOUND" "$UPPER_BOUND" "$SAMPLE_START_1" "$SAMPLE_START_2" "$SAMPLE_START_3" "$SAMPLE_DURATION")
     
-    FINAL_BITRATE_MBPS=$(echo "scale=2; $OPTIMAL_BITRATE_KBPS / 1000" | bc | tr -d '\n\r')
-    info "Optimal bitrate setting found: ${OPTIMAL_BITRATE_KBPS} kbps (${FINAL_BITRATE_MBPS} Mbps)"
-    info "Starting full video transcoding..."
+    info "Optimal quality setting found: ${OPTIMAL_QUALITY} (lower = higher quality)"
+    info "Starting full video transcoding with constant quality mode..."
     
     # Transcode full video
-    transcode_full_video "$VIDEO_FILE" "$OUTPUT_FILE" "$OPTIMAL_BITRATE_KBPS"
+    transcode_full_video "$VIDEO_FILE" "$OUTPUT_FILE" "$OPTIMAL_QUALITY"
     
     # Clean up any remaining sample files
     cleanup_samples "$VIDEO_FILE"
