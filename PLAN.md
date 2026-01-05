@@ -83,3 +83,10 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 - [ ] **Configurable constant quality start ranges**: Allow users to specify custom starting quality values or ranges for the optimization loop, rather than always starting at a fixed value (currently 30). This would help optimize for different use cases or content types.
 - [ ] **Lengthen optimization sample sizes**: Make the sample duration configurable or adaptive. Currently hardcoded to 15 seconds per sample. Longer samples would provide more accurate bitrate predictions but take longer to process. Could be made user-configurable or adaptive based on video duration/complexity.
+
+### Development Workflow
+
+- [ ] **Account-wide Cursor configuration for "remember what you need to" convention**: Explore options for making the PROJECT-CONTEXT.md/PLAN.md/README.md update convention reusable across projects. Options to investigate:
+  - Custom command template in `~/.cursor/command-templates/` that can be copied to each project's `.cursor/commands/` directory
+  - Global `.cursorrules` file in home directory (`~/.cursorrules`) if Cursor supports account-wide rules
+  - Other Cursor configuration mechanisms for account-wide AI behavior patterns
