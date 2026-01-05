@@ -57,7 +57,7 @@ The tool is implemented as a modular bash script (`boiler.sh`) organized into fo
 1. **Discovers video files** in the current working directory
 2. **Analyzes video properties** (resolution, duration) using `ffprobe`
 3. **Determines target bitrate** based on resolution
-4. **Checks if source is already optimized** - Short-circuits if source video is already within ±10% of target bitrate
+4. **Checks if source is already optimized** - Short-circuits if source video is already within ±5% of target bitrate
 5. **Iteratively finds optimal quality setting** using constant quality mode (`-q:v`) by transcoding samples from multiple points and adjusting quality to hit target bitrate
 6. **Transcodes the full video** using the optimal quality setting
 
@@ -73,7 +73,7 @@ The script is modularized into the following function categories:
 - `sanitize_value()` - Sanitizes values for bc calculations (removes newlines, carriage returns, trims whitespace)
 - `measure_bitrate()` - Generic function to measure bitrate from any video file (ffprobe first, file size fallback)
 - `get_source_bitrate()` - Measures source video bitrate (wrapper around `measure_bitrate()`)
-- `is_within_tolerance()` - Checks if a bitrate is within the acceptable tolerance range (±10%)
+- `is_within_tolerance()` - Checks if a bitrate is within the acceptable tolerance range (±5%)
 
 **Configuration Functions:**
 - `calculate_target_bitrate()` - Determines target bitrate based on resolution
@@ -109,13 +109,13 @@ The script is modularized into the following function categories:
 #### Bitrate Targeting
 - **2160p videos**: Target 11 Mbps
 - **1080p videos**: Target 8 Mbps
-- Acceptable range: ±10% of target bitrate
+- Acceptable range: ±5% of target bitrate
 
 #### Quality Optimization Algorithm
 
 The script uses an iterative approach to find the optimal quality setting using constant quality mode:
 
-1. **Pre-check**: Before starting optimization, checks if source video is already within ±10% of target bitrate OR if source bitrate is below target. If either condition is true, exits early with a message indicating no transcoding is needed.
+1. **Pre-check**: Before starting optimization, checks if source video is already within ±5% of target bitrate OR if source bitrate is below target. If either condition is true, exits early with a message indicating no transcoding is needed.
 2. **Initial quality**: Starts with quality value 52 (VideoToolbox `-q:v` scale: 0-100, higher = higher quality/bitrate)
 3. **Multi-point sampling**: Creates 60-second samples from multiple points in the video:
    - **Videos ≥ 180 seconds**: 3 samples at beginning (~10%), middle (~50%), and end (~90%)
@@ -132,7 +132,7 @@ The script uses an iterative approach to find the optimal quality setting using 
      - Example: If at 200% of target (ratio=2.0), adjustment = 10; if at 110% (ratio=1.1), adjustment ≈ 2
    - Quality value bounds: 0 (lowest quality/bitrate) to 100 (highest quality/bitrate)
    - This proportional approach converges faster than fixed step sizes, making larger adjustments when far from target and smaller adjustments when close
-6. **Convergence**: Stops when actual bitrate is within ±10% of target
+6. **Convergence**: Stops when actual bitrate is within ±5% of target
 7. **No iteration limit**: Loop continues indefinitely until convergence or quality bounds are reached
 
 #### Encoding Settings
@@ -255,8 +255,8 @@ The script uses two methods to determine bitrate:
 - Configurable constant quality start ranges
 
 ### Smart Pre-processing
-- Added early exit check: If source video is already within ±10% of target bitrate OR if source bitrate is below target, the script exits immediately with a helpful message, avoiding unnecessary transcoding work
-- Uses the same tolerance logic (±10%) and comparison method as the optimization loop for consistency
+- Added early exit check: If source video is already within ±5% of target bitrate OR if source bitrate is below target, the script exits immediately with a helpful message, avoiding unnecessary transcoding work
+- Uses the same tolerance logic (±5%) and comparison method as the optimization loop for consistency
 - `get_source_bitrate()` function measures source video bitrate using the same approach as sample measurement (ffprobe first, file size fallback)
 - Handles both cases: videos already at target (within tolerance) and videos already more compressed than target (below target bitrate)
 - **Automatic renaming for files below target**: When a source file is below target bitrate, it is automatically renamed to include its actual bitrate using the format `{base}.orig.{bitrate}.Mbps.{ext}` (e.g., `video.orig.2.90.Mbps.mp4`). This provides consistent filename formatting even for files that don't need transcoding.
@@ -303,7 +303,7 @@ Sampling from multiple points (beginning, middle, end) provides a more accurate 
 
 Longer samples provide more accurate bitrate measurements by averaging out variation within each sample. 60 seconds balances accuracy with iteration time. For longer videos, 3 samples per iteration provide 180 seconds of total sampling, which significantly improves bitrate targeting accuracy.
 
-### Why ±10% tolerance?
+### Why ±5% tolerance?
 
 Allows for natural variation in bitrate while still achieving the target. Too strict would require excessive iterations; too loose would miss the target.
 
@@ -313,7 +313,7 @@ Hardware acceleration on macOS Sequoia provides significantly faster encoding wh
 
 ### Why no iteration limit?
 
-The optimization loop continues until convergence (bitrate within ±10% tolerance) or quality bounds are reached (0 or 100). This allows the algorithm to find the optimal quality setting regardless of how many iterations it takes. Quality bounds prevent infinite loops by capping the adjustment range.
+The optimization loop continues until convergence (bitrate within ±5% tolerance) or quality bounds are reached (0 or 100). This allows the algorithm to find the optimal quality setting regardless of how many iterations it takes. Quality bounds prevent infinite loops by capping the adjustment range.
 
 ### Why modularize into functions?
 

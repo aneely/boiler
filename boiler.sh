@@ -370,7 +370,7 @@ find_optimal_quality() {
         
         # Check if within acceptable range
         if is_within_tolerance "$actual_bitrate_bps" "$lower_bound" "$upper_bound"; then
-            info "Bitrate is within acceptable range (10% of target)"
+            info "Bitrate is within acceptable range (5% of target)"
             break
         fi
         
@@ -477,9 +477,9 @@ main() {
     # Calculate target bitrate
     calculate_target_bitrate "$RESOLUTION"
     
-    # Calculate acceptable bitrate range (within 10% of target)
-    LOWER_BOUND=$(echo "$TARGET_BITRATE_BPS * 0.9" | bc | tr -d '\n\r')
-    UPPER_BOUND=$(echo "$TARGET_BITRATE_BPS * 1.1" | bc | tr -d '\n\r')
+    # Calculate acceptable bitrate range (within 5% of target)
+    LOWER_BOUND=$(echo "$TARGET_BITRATE_BPS * 0.95" | bc | tr -d '\n\r')
+    UPPER_BOUND=$(echo "$TARGET_BITRATE_BPS * 1.05" | bc | tr -d '\n\r')
     
     # Check if source video is already within acceptable range or below target
     SOURCE_BITRATE_BPS=$(get_source_bitrate "$VIDEO_FILE" "$VIDEO_DURATION")
@@ -487,11 +487,11 @@ main() {
     if [ -n "$SOURCE_BITRATE_BPS" ]; then
         SOURCE_BITRATE_MBPS=$(echo "scale=2; $(sanitize_value "$SOURCE_BITRATE_BPS") / 1000000" | bc | tr -d '\n\r' | xargs)
         
-        # Check if source is within ±10% of target
+        # Check if source is within ±5% of target
         if is_within_tolerance "$SOURCE_BITRATE_BPS" "$LOWER_BOUND" "$UPPER_BOUND"; then
             info "Source video bitrate: ${SOURCE_BITRATE_MBPS} Mbps"
-            info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps (acceptable range: ±10%)"
-            info "Source video is already within acceptable range (10% of target). No transcoding needed."
+            info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps (acceptable range: ±5%)"
+            info "Source video is already within acceptable range (5% of target). No transcoding needed."
             exit 0
         fi
         

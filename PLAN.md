@@ -26,7 +26,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Audio stream copying (no re-encoding)
 - [x] Color-coded output messages
 - [x] Error handling and validation
-- [x] Early exit check: Skip transcoding if source video is already within ±10% of target bitrate
+- [x] Early exit check: Skip transcoding if source video is already within ±5% of target bitrate
 - [x] Helper scripts for testing (copy test videos, cleanup)
 
 ### Current Defaults
@@ -62,7 +62,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 ### Smart Pre-processing
 
-- [x] **Skip already optimized files**: Exit early if the source file is already within ±10% of the target bitrate for its resolution. This prevents unnecessary transcoding when the file is already optimized. (Implemented)
+- [x] **Skip already optimized files**: Exit early if the source file is already within ±5% of the target bitrate for its resolution. This prevents unnecessary transcoding when the file is already optimized. (Implemented)
 
 ### Batch Processing
 
