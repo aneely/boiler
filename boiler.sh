@@ -306,6 +306,12 @@ find_optimal_quality() {
     # 52 is a good starting point
     local test_quality=52
     
+    # Track previous iterations for oscillation detection (can detect cycles of 2-3 values)
+    local prev_quality=""
+    local prev_bitrate_bps=""
+    local prev_prev_quality=""
+    local prev_prev_bitrate_bps=""
+    
     info "Starting quality adjustment process..."
     info "Using constant quality mode (-q:v), sampling from multiple points to find optimal quality setting"
     info "Using proportional adjustment algorithm (adjusts step size based on distance from target)"
@@ -430,6 +436,61 @@ find_optimal_quality() {
             fi
             info "Actual bitrate too high (${actual_bitrate_mbps} Mbps vs ${target_bitrate_mbps} Mbps target, ratio=${ratio}), decreasing quality value from ${old_quality} to ${test_quality} (adjustment: -${quality_adjustment})"
         fi
+        
+        # Detect oscillation: if we're about to try a quality value we've already tested recently
+        # This detects cycles of 2-3 quality values (e.g., 60 ↔ 61 ↔ 62)
+        local oscillation_detected=0
+        local best_quality=""
+        local best_bitrate_bps=""
+        local best_distance=""
+        
+        if [ -n "$prev_quality" ] && [ "$test_quality" = "$prev_quality" ]; then
+            # We're about to test the same quality as last iteration - 2-value oscillation
+            oscillation_detected=1
+            # Compare current and previous quality
+            local current_distance=$(echo "scale=4; ($(sanitize_value "$actual_bitrate_bps") - $(sanitize_value "$target_bitrate_bps"))^2" | bc | tr -d '\n\r')
+            local prev_distance=$(echo "scale=4; ($(sanitize_value "$prev_bitrate_bps") - $(sanitize_value "$target_bitrate_bps"))^2" | bc | tr -d '\n\r')
+            
+            if (( $(echo "$current_distance < $prev_distance" | bc -l) )); then
+                best_quality=$old_quality
+                best_bitrate_bps=$actual_bitrate_bps
+            else
+                best_quality=$prev_quality
+                best_bitrate_bps=$prev_bitrate_bps
+            fi
+        elif [ -n "$prev_prev_quality" ] && [ "$test_quality" = "$prev_prev_quality" ]; then
+            # We're about to test a quality from 2 iterations ago - 3-value cycle detected
+            oscillation_detected=1
+            # Compare all three quality values: current, prev, and prev_prev
+            local current_distance=$(echo "scale=4; ($(sanitize_value "$actual_bitrate_bps") - $(sanitize_value "$target_bitrate_bps"))^2" | bc | tr -d '\n\r')
+            local prev_distance=$(echo "scale=4; ($(sanitize_value "$prev_bitrate_bps") - $(sanitize_value "$target_bitrate_bps"))^2" | bc | tr -d '\n\r')
+            local prev_prev_distance=$(echo "scale=4; ($(sanitize_value "$prev_prev_bitrate_bps") - $(sanitize_value "$target_bitrate_bps"))^2" | bc | tr -d '\n\r')
+            
+            # Find the closest one
+            if (( $(echo "$current_distance <= $prev_distance" | bc -l) )) && (( $(echo "$current_distance <= $prev_prev_distance" | bc -l) )); then
+                best_quality=$old_quality
+                best_bitrate_bps=$actual_bitrate_bps
+            elif (( $(echo "$prev_distance <= $prev_prev_distance" | bc -l) )); then
+                best_quality=$prev_quality
+                best_bitrate_bps=$prev_bitrate_bps
+            else
+                best_quality=$prev_prev_quality
+                best_bitrate_bps=$prev_prev_bitrate_bps
+            fi
+        fi
+        
+        if [ "$oscillation_detected" -eq 1 ]; then
+            local best_bitrate_mbps=$(echo "scale=2; $(sanitize_value "$best_bitrate_bps") / 1000000" | bc | tr -d '\n\r' | xargs)
+            info "Oscillation detected. Using quality=${best_quality} (closest to target: ${best_bitrate_mbps} Mbps)"
+            test_quality=$best_quality
+            break
+        fi
+        
+        # Store current values for next iteration's oscillation detection
+        prev_prev_quality=$prev_quality
+        prev_prev_bitrate_bps=$prev_bitrate_bps
+        prev_quality=$old_quality
+        prev_bitrate_bps=$actual_bitrate_bps
     done
     
     echo "$test_quality"

@@ -133,7 +133,8 @@ The script uses an iterative approach to find the optimal quality setting using 
    - Quality value bounds: 0 (lowest quality/bitrate) to 100 (highest quality/bitrate)
    - This proportional approach converges faster than fixed step sizes, making larger adjustments when far from target and smaller adjustments when close
 6. **Convergence**: Stops when actual bitrate is within ±5% of target
-7. **No iteration limit**: Loop continues indefinitely until convergence or quality bounds are reached
+7. **Oscillation detection**: Detects when the algorithm is cycling between quality values (e.g., 60 ↔ 61 ↔ 62) and breaks the loop by selecting the quality value that produces bitrate closest to target. Handles both 2-value oscillations and 3-value cycles.
+8. **No iteration limit**: Loop continues indefinitely until convergence, oscillation detection, or quality bounds are reached
 
 #### Encoding Settings
 
@@ -231,6 +232,7 @@ The script uses two methods to determine bitrate:
   - Maximum step: 10 (for large corrections when far from target)
   - Adjustment scales proportionally: larger adjustments when far from target, smaller when close
   - Faster convergence: reduces iterations needed, especially when starting far from target bitrate
+- **Oscillation detection**: Added detection for cycles between quality values (e.g., 60 ↔ 61 ↔ 62) that can occur with tight tolerances. When oscillation is detected, the algorithm selects the quality value that produces bitrate closest to target and breaks the loop, preventing infinite oscillation.
 - Starting quality value: 52 (increased from 30 for faster convergence)
 
 **Sample Duration Improvements:**
@@ -313,7 +315,7 @@ Hardware acceleration on macOS Sequoia provides significantly faster encoding wh
 
 ### Why no iteration limit?
 
-The optimization loop continues until convergence (bitrate within ±5% tolerance) or quality bounds are reached (0 or 100). This allows the algorithm to find the optimal quality setting regardless of how many iterations it takes. Quality bounds prevent infinite loops by capping the adjustment range.
+The optimization loop continues until convergence (bitrate within ±5% tolerance), oscillation detection, or quality bounds are reached (0 or 100). This allows the algorithm to find the optimal quality setting regardless of how many iterations it takes. Quality bounds prevent infinite loops by capping the adjustment range. Oscillation detection prevents infinite cycling when tight tolerances cause the algorithm to alternate between quality values that don't quite meet the tolerance threshold.
 
 ### Why modularize into functions?
 
