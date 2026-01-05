@@ -77,7 +77,7 @@ The script is modularized into the following function categories:
 
 **Configuration Functions:**
 - `calculate_target_bitrate()` - Determines target bitrate based on resolution
-- `calculate_sample_points()` - Calculates sample points (10%, 50%, 90%) with bounds checking
+- `calculate_sample_points()` - Calculates sample points with adaptive logic: 3 samples for videos ≥180s, 2 samples for 120-179s, 1 sample for shorter videos. Uses 60-second samples (or full video for videos <60s)
 
 **Transcoding Functions:**
 - `transcode_sample()` - Transcodes a single sample from a specific point using constant quality mode (`-q:v`)
@@ -116,11 +116,12 @@ The script is modularized into the following function categories:
 The script uses an iterative approach to find the optimal quality setting using constant quality mode:
 
 1. **Pre-check**: Before starting optimization, checks if source video is already within ±10% of target bitrate. If so, exits early with a message indicating no transcoding is needed.
-2. **Initial quality**: Starts with quality value 30 (VideoToolbox `-q:v` scale: 0-100, higher = higher quality/bitrate)
-3. **Multi-point sampling**: Creates 15-second samples from 3 points in the video:
-   - Beginning (~10% through video)
-   - Middle (~50% through video)
-   - End (~90% through video)
+2. **Initial quality**: Starts with quality value 52 (VideoToolbox `-q:v` scale: 0-100, higher = higher quality/bitrate)
+3. **Multi-point sampling**: Creates 60-second samples from multiple points in the video:
+   - **Videos ≥ 180 seconds**: 3 samples at beginning (~10%), middle (~50%), and end (~90%)
+   - **Videos 120-179 seconds**: 2 samples at beginning and end (with 60s spacing)
+   - **Videos 60-119 seconds**: 1 sample (entire video)
+   - **Videos < 60 seconds**: 1 sample (entire video, using full video duration)
 4. **Bitrate measurement**: Averages bitrates from all 3 samples using `ffprobe` or file size calculation
 5. **Adjustment logic**:
    - If actual bitrate too low: Increase quality value by 2 (trend upwards to get higher bitrate)
@@ -217,7 +218,17 @@ The script uses two methods to determine bitrate:
   - Bitrate too low → increase quality value (trend upwards)
   - Bitrate too high → decrease quality value (trend downwards)
 - Quality step size: 2 (adjustable)
-- Starting quality value: 30 (adjustable)
+- Starting quality value: 52 (increased from 30 for faster convergence)
+
+**Sample Duration Improvements:**
+- Increased sample duration from 15 seconds to 60 seconds for better bitrate accuracy
+- Added adaptive sampling logic for shorter videos:
+  - Videos < 60 seconds: Uses entire video as single sample
+  - Videos 60-119 seconds: Uses 1 sample (entire video)
+  - Videos 120-179 seconds: Uses 2 samples (beginning and end with 60s spacing)
+  - Videos ≥ 180 seconds: Uses 3 samples (10%, 50%, 90% positions)
+- Longer samples average out more variation, improving bitrate targeting accuracy
+- For longer videos, each iteration now samples 180 seconds total (3 × 60s)
 
 **Filter Changes:**
 - Removed deblocking filters - relying on constant quality mode to handle quality/artifacts
@@ -225,13 +236,11 @@ The script uses two methods to determine bitrate:
 ### Known Issues
 
 - **FFmpeg processes not cleaned up on interrupt**: When using input seeking (`-ss` before `-i`), interrupting the script (Ctrl+C) leaves FFmpeg child processes running. Signal handling is implemented but may need verification.
-- **Sample duration**: Currently hardcoded to 15 seconds. For large 2160p files, this causes very long iteration times (each sample taking minutes to transcode).
 
 ### Future Enhancements (See PLAN.md)
 
 - Configurable constant quality start ranges
 - Rename files to include quality setting in filename
-- Lengthen optimization sample sizes (configurable or adaptive)
 
 ### Smart Pre-processing
 - Added early exit check: If source video is already within ±10% of target bitrate, the script exits immediately with a helpful message, avoiding unnecessary transcoding work
@@ -273,9 +282,9 @@ VideoToolbox HEVC encoder supports constant quality mode via `-q:v` parameter (0
 
 Sampling from multiple points (beginning, middle, end) provides a more accurate representation of overall video complexity. A single sample from the beginning might not represent the full video, especially if complexity varies throughout.
 
-### Why 15-second samples?
+### Why 60-second samples?
 
-Balances speed (shorter samples = faster iterations) with accuracy (longer samples = more representative bitrate). 15 seconds provides good compromise, and with 3 samples per iteration, we get 45 seconds of total sampling.
+Longer samples provide more accurate bitrate measurements by averaging out variation within each sample. 60 seconds balances accuracy with iteration time. For longer videos, 3 samples per iteration provide 180 seconds of total sampling, which significantly improves bitrate targeting accuracy.
 
 ### Why ±10% tolerance?
 

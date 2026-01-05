@@ -176,34 +176,85 @@ calculate_target_bitrate() {
 }
 
 # Calculate sample points: beginning (10%), middle (50%), and end (90%)
-# Returns: SAMPLE_START_1 SAMPLE_START_2 SAMPLE_START_3 (via global variables)
+# Adjusts sample positions for shorter videos that can't fit three non-overlapping samples
+# Returns: SAMPLE_START_1 SAMPLE_START_2 SAMPLE_START_3 SAMPLE_COUNT (via global variables)
 calculate_sample_points() {
     local video_duration="$1"
-    local sample_duration=15
+    local sample_duration=60
     
     # Clean video_duration for bc (remove any newlines/whitespace)
     video_duration=$(echo "$video_duration" | tr -d '\n\r')
     
-    # Calculate initial sample points
-    local sample_start_1=$(echo "scale=1; $video_duration * 0.1" | bc | tr -d '\n\r')
-    local sample_start_2=$(echo "scale=1; $video_duration * 0.5" | bc | tr -d '\n\r')
-    local sample_start_3=$(echo "scale=1; $video_duration * 0.9" | bc | tr -d '\n\r')
+    # If video is shorter than sample duration, use the whole video as the sample
+    if (( $(echo "$video_duration < $sample_duration" | bc -l) )); then
+        local sample_start_1=0
+        local sample_start_2=""  # Empty means skip
+        local sample_start_3=""  # Empty means skip
+        
+        SAMPLE_START_1="$sample_start_1"
+        SAMPLE_START_2="$sample_start_2"
+        SAMPLE_START_3="$sample_start_3"
+        SAMPLE_COUNT=1
+        SAMPLE_DURATION=$video_duration  # Use full video duration
+        warn "Video duration (${video_duration}s) is shorter than standard sample duration (${sample_duration}s). Using entire video as sample."
+        return
+    fi
     
-    # Ensure sample points don't exceed video duration
     local max_start=$(echo "scale=1; $video_duration - $sample_duration" | bc | tr -d '\n\r')
-    if (( $(echo "$sample_start_1 > $max_start" | bc -l) )); then
-        sample_start_1=0
-    fi
-    if (( $(echo "$sample_start_2 > $max_start" | bc -l) )); then
-        sample_start_2=$max_start
-    fi
-    if (( $(echo "$sample_start_3 > $max_start" | bc -l) )); then
-        sample_start_3=$max_start
+    local available_duration=$max_start
+    
+    # Determine how many samples we can fit and adjust positions accordingly
+    # Need at least sample_duration between start positions to avoid overlap
+    local min_spacing=$sample_duration
+    local three_samples_space=$(echo "scale=1; $min_spacing * 2" | bc | tr -d '\n\r')
+    
+    if (( $(echo "$available_duration >= $three_samples_space" | bc -l) )); then
+        # Video is long enough for three well-spaced samples (normal case)
+        # Use standard positions: 10%, 50%, 90%
+        local sample_start_1=$(echo "scale=1; $video_duration * 0.1" | bc | tr -d '\n\r')
+        local sample_start_2=$(echo "scale=1; $video_duration * 0.5" | bc | tr -d '\n\r')
+        local sample_start_3=$(echo "scale=1; $video_duration * 0.9" | bc | tr -d '\n\r')
+        
+        # Ensure sample points don't exceed max_start
+        if (( $(echo "$sample_start_1 > $max_start" | bc -l) )); then
+            sample_start_1=0
+        fi
+        if (( $(echo "$sample_start_2 > $max_start" | bc -l) )); then
+            sample_start_2=$max_start
+        fi
+        if (( $(echo "$sample_start_3 > $max_start" | bc -l) )); then
+            sample_start_3=$max_start
+        fi
+        
+        SAMPLE_START_1="$sample_start_1"
+        SAMPLE_START_2="$sample_start_2"
+        SAMPLE_START_3="$sample_start_3"
+        SAMPLE_COUNT=3
+    elif (( $(echo "$available_duration >= $min_spacing" | bc -l) )); then
+        # Video can fit two samples with proper spacing
+        # Use beginning and end positions
+        local sample_start_1=0
+        local sample_start_2=$max_start
+        local sample_start_3=""  # Empty means skip this sample
+        
+        SAMPLE_START_1="$sample_start_1"
+        SAMPLE_START_2="$sample_start_2"
+        SAMPLE_START_3="$sample_start_3"
+        SAMPLE_COUNT=2
+        warn "Video duration (${video_duration}s) allows only 2 samples instead of 3"
+    else
+        # Video can only fit one sample
+        local sample_start_1=0
+        local sample_start_2=""  # Empty means skip
+        local sample_start_3=""  # Empty means skip
+        
+        SAMPLE_START_1="$sample_start_1"
+        SAMPLE_START_2="$sample_start_2"
+        SAMPLE_START_3="$sample_start_3"
+        SAMPLE_COUNT=1
+        warn "Video duration (${video_duration}s) allows only 1 sample instead of 3"
     fi
     
-    SAMPLE_START_1="$sample_start_1"
-    SAMPLE_START_2="$sample_start_2"
-    SAMPLE_START_3="$sample_start_3"
     SAMPLE_DURATION=$sample_duration
 }
 
@@ -251,11 +302,11 @@ find_optimal_quality() {
     local iteration=0
     # Start with a reasonable quality value
     # VideoToolbox -q:v scale: higher value = higher quality = higher bitrate
-    # 30 is a good starting point
-    local test_quality=30
+    # 52 is a good starting point
+    local test_quality=52
     
     info "Starting quality adjustment process..."
-    info "Using constant quality mode (-q:v), sampling from 3 points (beginning, middle, end) to find optimal quality setting"
+    info "Using constant quality mode (-q:v), sampling from multiple points to find optimal quality setting"
     
     while true; do
         iteration=$((iteration + 1))
@@ -267,6 +318,11 @@ find_optimal_quality() {
         local sample_index=0
         
         for sample_start in "$sample_start_1" "$sample_start_2" "$sample_start_3"; do
+            # Skip empty sample positions (for shorter videos)
+            if [ -z "$sample_start" ]; then
+                continue
+            fi
+            
             sample_index=$((sample_index + 1))
             local sample_file_point="${video_file%.*}_sample_${sample_index}.mp4"
             
