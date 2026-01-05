@@ -115,7 +115,7 @@ The script is modularized into the following function categories:
 
 The script uses an iterative approach to find the optimal quality setting using constant quality mode:
 
-1. **Pre-check**: Before starting optimization, checks if source video is already within ±10% of target bitrate. If so, exits early with a message indicating no transcoding is needed.
+1. **Pre-check**: Before starting optimization, checks if source video is already within ±10% of target bitrate OR if source bitrate is below target. If either condition is true, exits early with a message indicating no transcoding is needed.
 2. **Initial quality**: Starts with quality value 52 (VideoToolbox `-q:v` scale: 0-100, higher = higher quality/bitrate)
 3. **Multi-point sampling**: Creates 60-second samples from multiple points in the video:
    - **Videos ≥ 180 seconds**: 3 samples at beginning (~10%), middle (~50%), and end (~90%)
@@ -243,9 +243,10 @@ The script uses two methods to determine bitrate:
 - Rename files to include quality setting in filename
 
 ### Smart Pre-processing
-- Added early exit check: If source video is already within ±10% of target bitrate, the script exits immediately with a helpful message, avoiding unnecessary transcoding work
+- Added early exit check: If source video is already within ±10% of target bitrate OR if source bitrate is below target, the script exits immediately with a helpful message, avoiding unnecessary transcoding work
 - Uses the same tolerance logic (±10%) and comparison method as the optimization loop for consistency
 - `get_source_bitrate()` function measures source video bitrate using the same approach as sample measurement (ffprobe first, file size fallback)
+- Handles both cases: videos already at target (within tolerance) and videos already more compressed than target (below target bitrate)
 
 ### Modularization
 - Refactored script into focused functions for better maintainability
@@ -257,6 +258,8 @@ The script uses two methods to determine bitrate:
 - Fixed function return value corruption by redirecting logging functions to stderr
 - Added value sanitization throughout to prevent issues with `ffprobe` and `bc` outputs containing trailing newlines
 - Added QuickLook compatibility: `-movflags +faststart` for sample transcoding; both `-movflags +faststart` and `-tag:v hvc1` for final output to ensure macOS Finder preview support
+- Fixed short-circuit logic: Added check for source bitrate below target (previously only checked within tolerance range)
+- Fixed incorrect info message about quality values (corrected "lower = higher quality" to "higher = higher quality/bitrate")
 
 ## Current Limitations
 

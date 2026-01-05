@@ -443,15 +443,25 @@ main() {
     LOWER_BOUND=$(echo "$TARGET_BITRATE_BPS * 0.9" | bc | tr -d '\n\r')
     UPPER_BOUND=$(echo "$TARGET_BITRATE_BPS * 1.1" | bc | tr -d '\n\r')
     
-    # Check if source video is already within acceptable range
+    # Check if source video is already within acceptable range or below target
     SOURCE_BITRATE_BPS=$(get_source_bitrate "$VIDEO_FILE" "$VIDEO_DURATION")
     
     if [ -n "$SOURCE_BITRATE_BPS" ]; then
+        SOURCE_BITRATE_MBPS=$(echo "scale=2; $(sanitize_value "$SOURCE_BITRATE_BPS") / 1000000" | bc | tr -d '\n\r' | xargs)
+        
+        # Check if source is within ±10% of target
         if is_within_tolerance "$SOURCE_BITRATE_BPS" "$LOWER_BOUND" "$UPPER_BOUND"; then
-            SOURCE_BITRATE_MBPS=$(echo "scale=2; $(sanitize_value "$SOURCE_BITRATE_BPS") / 1000000" | bc | tr -d '\n\r' | xargs)
             info "Source video bitrate: ${SOURCE_BITRATE_MBPS} Mbps"
             info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps (acceptable range: ±10%)"
             info "Source video is already within acceptable range (10% of target). No transcoding needed."
+            exit 0
+        fi
+        
+        # Check if source is already below target (already more compressed than desired)
+        if (( $(echo "$(sanitize_value "$SOURCE_BITRATE_BPS") < $TARGET_BITRATE_BPS" | bc -l) )); then
+            info "Source video bitrate: ${SOURCE_BITRATE_MBPS} Mbps"
+            info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps"
+            info "Source video is already below target bitrate. No transcoding needed."
             exit 0
         fi
     fi
@@ -465,7 +475,7 @@ main() {
     # Find optimal quality setting (using constant quality mode)
     OPTIMAL_QUALITY=$(find_optimal_quality "$VIDEO_FILE" "$TARGET_BITRATE_BPS" "$LOWER_BOUND" "$UPPER_BOUND" "$SAMPLE_START_1" "$SAMPLE_START_2" "$SAMPLE_START_3" "$SAMPLE_DURATION")
     
-    info "Optimal quality setting found: ${OPTIMAL_QUALITY} (lower = higher quality)"
+    info "Optimal quality setting found: ${OPTIMAL_QUALITY} (higher = higher quality/bitrate)"
     info "Starting full video transcoding with constant quality mode..."
     
     # Transcode full video
