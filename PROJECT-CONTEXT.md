@@ -83,6 +83,9 @@ The script is modularized into the following function categories:
 - `get_video_resolution()` - Extracts video resolution using ffprobe
 - `get_video_duration()` - Extracts video duration using ffprobe
 - `sanitize_value()` - Sanitizes values for bc calculations (removes newlines, carriage returns, trims whitespace)
+- `bps_to_mbps()` - Converts bitrate from bits per second to megabits per second (with 2 decimal places)
+- `calculate_squared_distance()` - Calculates squared distance between a bitrate and target bitrate (used for oscillation detection)
+- `parse_filename()` - Parses filename into base name and extension (sets global variables BASE_NAME and FILE_EXTENSION)
 - `measure_bitrate()` - Generic function to measure bitrate from any video file (ffprobe first, file size fallback)
 - `get_source_bitrate()` - Measures source video bitrate (wrapper around `measure_bitrate()`)
 - `is_within_tolerance()` - Checks if a bitrate is within the acceptable tolerance range (±5%)
@@ -100,6 +103,9 @@ The script is modularized into the following function categories:
 
 **Main Orchestration:**
 - `main()` - Orchestrates all steps in the correct order
+
+**Signal Handling:**
+- `cleanup_on_exit()` - Cleanup function registered with trap to kill process group and remove sample files on exit/interrupt
 
 **Logging Functions:**
 - `info()`, `warn()`, `error()` - Color-coded output functions (output to stderr to avoid interfering with function return values)
