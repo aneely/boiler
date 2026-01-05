@@ -17,12 +17,24 @@ This project provides a simplified command-line interface for transcoding video 
 - Only implement changes after the user explicitly requests them
 
 **When the user asks informational questions (e.g., "Is there a way to...", "How would I...", "What would happen if..."):**
-- **ONLY provide an explanation or answer** - do NOT implement anything
+- **STRICTLY ONLY provide an explanation or answer** - do NOT implement anything
+- **NEVER start making code changes** when asked informational questions
 - Explain the approach, solution, or answer to their question
 - Wait for explicit request like "implement this", "add this", "make this change" before making any code changes
 - Questions are for learning and discussion, not automatic implementation
+- If unsure whether a request is informational or an implementation request, treat it as informational and ask for clarification
 
 This ensures the user maintains control over the development direction and can make informed decisions about which solutions best fit their needs.
+
+### Testing Before Committing
+
+**Before committing any changes:**
+- **ALWAYS run the test suite** (`bash test_boiler.sh`) to ensure all tests pass
+- Verify that no regressions were introduced
+- If tests fail, fix the issues before committing
+- Only commit when all tests pass (exit code 0)
+
+This ensures code quality and prevents regressions from being committed to the repository.
 
 ### Documentation Update Directive
 

@@ -110,6 +110,33 @@ sanitize_value() {
     echo "$1" | tr -d '\n\r' | xargs
 }
 
+# Convert bitrate from bits per second to megabits per second
+# Arguments: bitrate_bps
+# Returns: bitrate in Mbps with 2 decimal places
+bps_to_mbps() {
+    local bitrate_bps=$(sanitize_value "$1")
+    echo "scale=2; $bitrate_bps / 1000000" | bc | tr -d '\n\r' | xargs
+}
+
+# Calculate squared distance between a bitrate and target bitrate
+# Used for oscillation detection to find the quality value closest to target
+# Arguments: bitrate_bps, target_bitrate_bps
+# Returns: squared distance
+calculate_squared_distance() {
+    local bitrate_bps=$(sanitize_value "$1")
+    local target_bitrate_bps=$(sanitize_value "$2")
+    echo "scale=4; ($bitrate_bps - $target_bitrate_bps)^2" | bc | tr -d '\n\r'
+}
+
+# Parse filename into base name and extension
+# Arguments: filename
+# Returns: BASE_NAME FILE_EXTENSION (via global variables)
+parse_filename() {
+    local filename="$1"
+    BASE_NAME="${filename%.*}"
+    FILE_EXTENSION="${filename##*.}"
+}
+
 # Measure bitrate from a video file
 # Arguments: file_path, duration_seconds
 # Returns: bitrate in bits per second, or empty string if unavailable
@@ -367,7 +394,7 @@ find_optimal_quality() {
         local actual_bitrate_mbps
         if [ "$sample_count" -gt 0 ]; then
             actual_bitrate_bps=$(echo "scale=0; $total_bitrate_bps / $sample_count" | bc | tr -d '\n\r' | xargs)
-            actual_bitrate_mbps=$(echo "scale=2; $actual_bitrate_bps / 1000000" | bc | tr -d '\n\r' | xargs)
+            actual_bitrate_mbps=$(bps_to_mbps "$actual_bitrate_bps")
         else
             error "Invalid sample_count for average calculation"
             exit 1
@@ -385,7 +412,7 @@ find_optimal_quality() {
         # Proportional adjustment: larger adjustments when far from target, smaller when close
         local old_quality=$test_quality
         local quality_adjustment=0
-        local target_bitrate_mbps=$(echo "scale=2; $(sanitize_value "$target_bitrate_bps") / 1000000" | bc | tr -d '\n\r' | xargs)
+        local target_bitrate_mbps=$(bps_to_mbps "$target_bitrate_bps")
         
         if (( $(echo "$actual_bitrate_bps < $lower_bound" | bc -l) )); then
             # Actual bitrate too low, need higher quality (increase quality value)
@@ -448,8 +475,8 @@ find_optimal_quality() {
             # We're about to test the same quality as last iteration - 2-value oscillation
             oscillation_detected=1
             # Compare current and previous quality
-            local current_distance=$(echo "scale=4; ($(sanitize_value "$actual_bitrate_bps") - $(sanitize_value "$target_bitrate_bps"))^2" | bc | tr -d '\n\r')
-            local prev_distance=$(echo "scale=4; ($(sanitize_value "$prev_bitrate_bps") - $(sanitize_value "$target_bitrate_bps"))^2" | bc | tr -d '\n\r')
+            local current_distance=$(calculate_squared_distance "$actual_bitrate_bps" "$target_bitrate_bps")
+            local prev_distance=$(calculate_squared_distance "$prev_bitrate_bps" "$target_bitrate_bps")
             
             if (( $(echo "$current_distance < $prev_distance" | bc -l) )); then
                 best_quality=$old_quality
@@ -462,9 +489,9 @@ find_optimal_quality() {
             # We're about to test a quality from 2 iterations ago - 3-value cycle detected
             oscillation_detected=1
             # Compare all three quality values: current, prev, and prev_prev
-            local current_distance=$(echo "scale=4; ($(sanitize_value "$actual_bitrate_bps") - $(sanitize_value "$target_bitrate_bps"))^2" | bc | tr -d '\n\r')
-            local prev_distance=$(echo "scale=4; ($(sanitize_value "$prev_bitrate_bps") - $(sanitize_value "$target_bitrate_bps"))^2" | bc | tr -d '\n\r')
-            local prev_prev_distance=$(echo "scale=4; ($(sanitize_value "$prev_prev_bitrate_bps") - $(sanitize_value "$target_bitrate_bps"))^2" | bc | tr -d '\n\r')
+            local current_distance=$(calculate_squared_distance "$actual_bitrate_bps" "$target_bitrate_bps")
+            local prev_distance=$(calculate_squared_distance "$prev_bitrate_bps" "$target_bitrate_bps")
+            local prev_prev_distance=$(calculate_squared_distance "$prev_prev_bitrate_bps" "$target_bitrate_bps")
             
             # Find the closest one
             if (( $(echo "$current_distance <= $prev_distance" | bc -l) )) && (( $(echo "$current_distance <= $prev_prev_distance" | bc -l) )); then
@@ -480,7 +507,7 @@ find_optimal_quality() {
         fi
         
         if [ "$oscillation_detected" -eq 1 ]; then
-            local best_bitrate_mbps=$(echo "scale=2; $(sanitize_value "$best_bitrate_bps") / 1000000" | bc | tr -d '\n\r' | xargs)
+            local best_bitrate_mbps=$(bps_to_mbps "$best_bitrate_bps")
             info "Oscillation detected. Using quality=${best_quality} (closest to target: ${best_bitrate_mbps} Mbps)"
             test_quality=$best_quality
             break
@@ -546,7 +573,7 @@ main() {
     SOURCE_BITRATE_BPS=$(get_source_bitrate "$VIDEO_FILE" "$VIDEO_DURATION")
     
     if [ -n "$SOURCE_BITRATE_BPS" ]; then
-        SOURCE_BITRATE_MBPS=$(echo "scale=2; $(sanitize_value "$SOURCE_BITRATE_BPS") / 1000000" | bc | tr -d '\n\r' | xargs)
+        SOURCE_BITRATE_MBPS=$(bps_to_mbps "$SOURCE_BITRATE_BPS")
         
         # Check if source is within ±5% of target
         if is_within_tolerance "$SOURCE_BITRATE_BPS" "$LOWER_BOUND" "$UPPER_BOUND"; then
@@ -563,9 +590,8 @@ main() {
             info "Source video is already below target bitrate. No transcoding needed."
             
             # Rename file to include actual bitrate: {base}.orig.{bitrate}.Mbps.{ext}
-            local base_name="${VIDEO_FILE%.*}"
-            local file_extension="${VIDEO_FILE##*.}"
-            local renamed_file="${base_name}.orig.${SOURCE_BITRATE_MBPS}.Mbps.${file_extension}"
+            parse_filename "$VIDEO_FILE"
+            local renamed_file="${BASE_NAME}.orig.${SOURCE_BITRATE_MBPS}.Mbps.${FILE_EXTENSION}"
             
             # Only rename if the filename would be different
             if [ "$VIDEO_FILE" != "$renamed_file" ]; then
@@ -578,9 +604,8 @@ main() {
     fi
     
     # Generate temporary output filename for transcoding
-    local base_name="${VIDEO_FILE%.*}"
-    local file_extension="${VIDEO_FILE##*.}"
-    local temp_output_file="${base_name}_temp_transcode.${file_extension}"
+    parse_filename "$VIDEO_FILE"
+    local temp_output_file="${BASE_NAME}_temp_transcode.${FILE_EXTENSION}"
     
     # Calculate sample points
     calculate_sample_points "$VIDEO_DURATION"
@@ -603,10 +628,10 @@ main() {
     fi
     
     # Calculate actual bitrate in Mbps (with 2 decimal places)
-    local actual_bitrate_mbps=$(echo "scale=2; $(sanitize_value "$actual_bitrate_bps") / 1000000" | bc | tr -d '\n\r' | xargs)
+    local actual_bitrate_mbps=$(bps_to_mbps "$actual_bitrate_bps")
     
     # Generate final output filename: {base}.fmpg.{actual_bitrate}.Mbps.{ext}
-    OUTPUT_FILE="${base_name}.fmpg.${actual_bitrate_mbps}.Mbps.${file_extension}"
+    OUTPUT_FILE="${BASE_NAME}.fmpg.${actual_bitrate_mbps}.Mbps.${FILE_EXTENSION}"
     
     # Rename temporary file to final filename
     mv "$temp_output_file" "$OUTPUT_FILE"
@@ -619,6 +644,8 @@ main() {
     info "Actual bitrate: ${actual_bitrate_mbps} Mbps"
 }
 
-# Run main function
-main
+# Run main function (unless in test mode)
+if [ -z "${BOILER_TEST_MODE:-}" ]; then
+    main
+fi
 
