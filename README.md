@@ -168,6 +168,17 @@ For testing and development, helper scripts are available:
 - **`./copy-4k-test.sh`** - Copies the 4K test video to the current directory  
 - **`./cleanup-mp4.sh`** - Removes all .mp4 files from the project root directory
 
+### Running Tests
+
+The project includes a comprehensive test suite (`test_boiler.sh`) with 85 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full integration tests. The test suite uses function mocking to avoid requiring actual video files or FFmpeg installation, making it suitable for CI/CD environments.
+
+To run the test suite:
+```bash
+bash test_boiler.sh
+```
+
+The tests verify function behavior through call tracking rather than file side effects, ensuring fast execution and reliable results.
+
 ## Contributing
 
 This is an early-stage project. Contributions and feedback are welcome!

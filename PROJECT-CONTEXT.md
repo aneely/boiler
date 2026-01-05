@@ -257,6 +257,21 @@ The script uses two methods to determine bitrate:
 
 ## Current Session Status
 
+### Latest Session (Testing Infrastructure)
+
+**Function Mocking and Integration Tests:**
+- Implemented file-based call tracking system for mocking FFmpeg/ffprobe functions
+- Added 25 integration tests for `main()` function covering all code paths
+- Refactored test suite to avoid file I/O dependencies (no Python, dd, or large file creation needed)
+- Tests now work across subshells using temporary files for call tracking
+- Total test coverage: 85 tests (52 utility + 8 mock + 25 integration)
+- All tests passing and CI/CD ready (no FFmpeg/ffprobe required for testing)
+
+**Key Technical Decisions:**
+- Used file-based tracking instead of arrays/strings to work around bash subshell limitations (command substitution `$(...)` creates subshells where variable assignments don't persist)
+- Mocked `find_optimal_quality()` initially but removed mock to allow full integration testing - optimization converges quickly when sample bitrates match target
+- Tests verify function behavior through call tracking rather than file side effects, making them faster and more reliable
+
 ### Recent Major Changes (Current Implementation)
 
 **Switched to Constant Quality Mode:**

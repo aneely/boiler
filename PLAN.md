@@ -28,6 +28,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Error handling and validation
 - [x] Early exit check: Skip transcoding if source video is already within ±5% of target bitrate
 - [x] Helper scripts for testing (copy test videos, cleanup)
+- [x] Comprehensive test suite with function mocking (85 tests, CI/CD ready)
 
 ### Current Defaults
 
@@ -55,6 +56,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - **Multi-point sampling**: Implemented to address issue where single sample from beginning didn't accurately predict full video bitrate.
 - **No iteration limit**: Removed iteration limit safeguard - loop continues until convergence or quality bounds (0-100) are reached.
 - **Code refactoring**: Consolidated duplicate bitrate measurement logic into generic `measure_bitrate()` function. Extracted tolerance checking into `is_within_tolerance()` helper. Added `sanitize_value()` helper for consistent value sanitization. Renamed `find_optimal_bitrate()` to `find_optimal_quality()` to reflect constant quality mode.
+- **Testing infrastructure**: Implemented comprehensive test suite with function mocking using file-based call tracking. 85 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration. Tests work without FFmpeg/ffprobe installation, enabling CI/CD workflows. Uses temporary files for call tracking to work around bash subshell limitations.
 - **Performance issue with large files**: Sample duration is hardcoded to 15 seconds, causing very long iteration times for large 2160p files. Adaptive sample duration based on file size has been tested and works well, but needs to be implemented.
 - **FFmpeg process cleanup**: Signal handling implemented to kill process group on interrupt, but may need verification.
 
