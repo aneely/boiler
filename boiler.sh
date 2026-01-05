@@ -298,7 +298,8 @@ find_optimal_quality() {
     local sample_start_3="$7"
     local sample_duration="$8"
     
-    local quality_step=2
+    local min_step=1      # Minimum adjustment step (for fine-tuning when close)
+    local max_step=10     # Maximum adjustment step (for large corrections when far off)
     local iteration=0
     # Start with a reasonable quality value
     # VideoToolbox -q:v scale: higher value = higher quality = higher bitrate
@@ -307,6 +308,7 @@ find_optimal_quality() {
     
     info "Starting quality adjustment process..."
     info "Using constant quality mode (-q:v), sampling from multiple points to find optimal quality setting"
+    info "Using proportional adjustment algorithm (adjusts step size based on distance from target)"
     
     while true; do
         iteration=$((iteration + 1))
@@ -372,25 +374,61 @@ find_optimal_quality() {
             break
         fi
         
-        # Adjust quality setting based on actual output bitrate
+        # Adjust quality setting based on actual output bitrate using proportional adjustment
         # VideoToolbox -q:v scale: higher value = higher quality = higher bitrate
-        # If bitrate too low: increase quality value (trend upwards)
-        # If bitrate too high: decrease quality value (trend downwards)
+        # Proportional adjustment: larger adjustments when far from target, smaller when close
         local old_quality=$test_quality
+        local quality_adjustment=0
+        local target_bitrate_mbps=$(echo "scale=2; $(sanitize_value "$target_bitrate_bps") / 1000000" | bc | tr -d '\n\r' | xargs)
+        
         if (( $(echo "$actual_bitrate_bps < $lower_bound" | bc -l) )); then
             # Actual bitrate too low, need higher quality (increase quality value)
-            test_quality=$((test_quality + quality_step))
+            # Calculate ratio: how far below target are we? (0.0 = at target, 0.5 = 50% of target, etc.)
+            local ratio=$(echo "scale=4; $(sanitize_value "$actual_bitrate_bps") / $(sanitize_value "$target_bitrate_bps")" | bc | tr -d '\n\r')
+            # Calculate adjustment: scale from min_step to max_step based on how far off we are
+            # If ratio is 0.5 (50% of target), we want max_step adjustment
+            # If ratio is 0.9 (90% of target), we want min_step adjustment
+            # Formula: adjustment = min_step + (max_step - min_step) * (1 - ratio)
+            local distance_from_target=$(echo "scale=4; 1 - $ratio" | bc | tr -d '\n\r')
+            # Calculate adjustment and round to nearest integer
+            local adjustment_float=$(echo "scale=4; $min_step + ($max_step - $min_step) * $distance_from_target" | bc | tr -d '\n\r')
+            quality_adjustment=$(printf "%.0f" "$adjustment_float" | tr -d '\n\r' | xargs)
+            # Ensure it's at least min_step
+            if [ "$quality_adjustment" -lt "$min_step" ]; then
+                quality_adjustment=$min_step
+            fi
+            
+            test_quality=$((test_quality + quality_adjustment))
             if [ $test_quality -gt 100 ]; then
                 test_quality=100  # Maximum quality value (highest quality/bitrate)
             fi
-            info "Actual bitrate too low, increasing quality value from ${old_quality} to ${test_quality} (trending upwards)"
+            info "Actual bitrate too low (${actual_bitrate_mbps} Mbps vs ${target_bitrate_mbps} Mbps target, ratio=${ratio}), increasing quality value from ${old_quality} to ${test_quality} (adjustment: +${quality_adjustment})"
         else
             # Actual bitrate too high, need lower quality (decrease quality value)
-            test_quality=$((test_quality - quality_step))
+            # Calculate ratio: how far above target are we? (1.0 = at target, 2.0 = 200% of target, etc.)
+            local ratio=$(echo "scale=4; $(sanitize_value "$actual_bitrate_bps") / $(sanitize_value "$target_bitrate_bps")" | bc | tr -d '\n\r')
+            # Calculate adjustment: scale from min_step to max_step based on how far off we are
+            # If ratio is 2.0 (200% of target), we want max_step adjustment
+            # If ratio is 1.1 (110% of target), we want min_step adjustment
+            # Formula: adjustment = min_step + (max_step - min_step) * (ratio - 1)
+            local distance_from_target=$(echo "scale=4; $ratio - 1" | bc | tr -d '\n\r')
+            # Cap distance at reasonable maximum (e.g., if ratio is 3.0, treat as 2.0 for adjustment calculation)
+            if (( $(echo "$distance_from_target > 1.0" | bc -l) )); then
+                distance_from_target=1.0
+            fi
+            # Calculate adjustment and round to nearest integer
+            local adjustment_float=$(echo "scale=4; $min_step + ($max_step - $min_step) * $distance_from_target" | bc | tr -d '\n\r')
+            quality_adjustment=$(printf "%.0f" "$adjustment_float" | tr -d '\n\r' | xargs)
+            # Ensure it's at least min_step
+            if [ "$quality_adjustment" -lt "$min_step" ]; then
+                quality_adjustment=$min_step
+            fi
+            
+            test_quality=$((test_quality - quality_adjustment))
             if [ $test_quality -lt 0 ]; then
                 test_quality=0  # Minimum quality value (lowest quality/bitrate)
             fi
-            info "Actual bitrate too high, decreasing quality value from ${old_quality} to ${test_quality} (trending downwards)"
+            info "Actual bitrate too high (${actual_bitrate_mbps} Mbps vs ${target_bitrate_mbps} Mbps target, ratio=${ratio}), decreasing quality value from ${old_quality} to ${test_quality} (adjustment: -${quality_adjustment})"
         fi
     done
     

@@ -122,11 +122,16 @@ The script uses an iterative approach to find the optimal quality setting using 
    - **Videos 120-179 seconds**: 2 samples at beginning and end (with 60s spacing)
    - **Videos 60-119 seconds**: 1 sample (entire video)
    - **Videos < 60 seconds**: 1 sample (entire video, using full video duration)
-4. **Bitrate measurement**: Averages bitrates from all 3 samples using `ffprobe` or file size calculation
-5. **Adjustment logic**:
-   - If actual bitrate too low: Increase quality value by 2 (trend upwards to get higher bitrate)
-   - If actual bitrate too high: Decrease quality value by 2 (trend downwards to get lower bitrate)
+4. **Bitrate measurement**: Averages bitrates from all samples using `ffprobe` or file size calculation
+5. **Proportional adjustment algorithm**: Adjusts quality value proportionally based on distance from target:
+   - **Minimum step**: 1 (for fine-tuning when close to target)
+   - **Maximum step**: 10 (for large corrections when far from target)
+   - **When bitrate too low**: Calculates ratio = actual_bitrate / target_bitrate, then adjustment = min_step + (max_step - min_step) × (1 - ratio)
+     - Example: If at 50% of target (ratio=0.5), adjustment ≈ 6; if at 90% (ratio=0.9), adjustment ≈ 2
+   - **When bitrate too high**: Calculates ratio = actual_bitrate / target_bitrate, then adjustment = min_step + (max_step - min_step) × (ratio - 1), capped at 1.0
+     - Example: If at 200% of target (ratio=2.0), adjustment = 10; if at 110% (ratio=1.1), adjustment ≈ 2
    - Quality value bounds: 0 (lowest quality/bitrate) to 100 (highest quality/bitrate)
+   - This proportional approach converges faster than fixed step sizes, making larger adjustments when far from target and smaller adjustments when close
 6. **Convergence**: Stops when actual bitrate is within ±10% of target
 7. **No iteration limit**: Loop continues indefinitely until convergence or quality bounds are reached
 
@@ -217,7 +222,11 @@ The script uses two methods to determine bitrate:
 - Fixed quality adjustment logic to trend correctly:
   - Bitrate too low → increase quality value (trend upwards)
   - Bitrate too high → decrease quality value (trend downwards)
-- Quality step size: 2 (adjustable)
+- **Proportional adjustment algorithm**: Replaced fixed step size (2) with proportional adjustment based on distance from target:
+  - Minimum step: 1 (for fine-tuning when close to target)
+  - Maximum step: 10 (for large corrections when far from target)
+  - Adjustment scales proportionally: larger adjustments when far from target, smaller when close
+  - Faster convergence: reduces iterations needed, especially when starting far from target bitrate
 - Starting quality value: 52 (increased from 30 for faster convergence)
 
 **Sample Duration Improvements:**
@@ -260,6 +269,7 @@ The script uses two methods to determine bitrate:
 - Added QuickLook compatibility: `-movflags +faststart` for sample transcoding; both `-movflags +faststart` and `-tag:v hvc1` for final output to ensure macOS Finder preview support
 - Fixed short-circuit logic: Added check for source bitrate below target (previously only checked within tolerance range)
 - Fixed incorrect info message about quality values (corrected "lower = higher quality" to "higher = higher quality/bitrate")
+- Fixed integer conversion error in proportional adjustment: Quality adjustment values are now properly rounded to integers using `printf "%.0f"` before use in arithmetic operations, preventing "integer expression expected" errors
 
 ## Current Limitations
 
