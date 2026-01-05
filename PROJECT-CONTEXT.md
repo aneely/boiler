@@ -180,6 +180,7 @@ The script uses an iterative approach to find the optimal quality setting using 
 ```
 boiler/
 ├── boiler.sh                    # Main transcoding script
+├── test_boiler.sh               # Test suite with function mocking (85 tests)
 ├── copy-1080p-test.sh          # Helper: Copy 1080p test video to current directory
 ├── copy-4k-test.sh              # Helper: Copy 4K test video to current directory
 ├── cleanup-mp4.sh               # Helper: Remove all .mp4 files from project root
@@ -229,6 +230,30 @@ The script uses two methods to determine bitrate:
 - **Consolidated bitrate measurement**: Created generic `measure_bitrate()` function that eliminates duplicate code between `get_source_bitrate()` and `measure_sample_bitrate()`. Both functions now call the shared implementation.
 - **Extracted tolerance checking**: Created `is_within_tolerance()` function to replace duplicate range checking logic in `main()` and `find_optimal_bitrate()`. Improves readability and maintainability.
 - **Value sanitization helper**: Added `sanitize_value()` function for consistent sanitization of values before bc calculations. Used throughout the script for cleaner, more maintainable code.
+
+### Testing Infrastructure
+
+**Test Suite (`test_boiler.sh`):**
+- **85 tests** covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration
+- **Function mocking approach**: Uses file-based call tracking to mock FFmpeg/ffprobe-dependent functions without requiring actual video files or FFmpeg installation
+- **Mocked functions**:
+  - `get_video_resolution()` - Returns configurable resolution (default: 1080p)
+  - `get_video_duration()` - Returns configurable duration (default: 300s)
+  - `measure_bitrate()` - Returns configurable bitrate (supports source, sample, and output file differentiation)
+  - `transcode_sample()` - Tracks calls instead of transcoding
+  - `transcode_full_video()` - Tracks calls instead of transcoding
+  - `find_video_file()` - Returns test file paths
+  - `check_requirements()` - Skips requirement checks in test mode
+- **Call tracking**: Uses temporary files to track function calls across subshells (command substitution creates subshells where variable assignments don't persist)
+- **Integration tests**: Tests `main()` function covering:
+  - Early exit when source is within tolerance
+  - Early exit when source is below target (with file renaming verification)
+  - Full transcoding workflow (source above target)
+- **Benefits**:
+  - Fast execution (no actual transcoding)
+  - No FFmpeg/ffprobe required (enables CI/CD in environments without FFmpeg)
+  - Verifies function behavior through call tracking rather than file side effects
+  - No external dependencies (no Python, dd, or other tools needed)
 
 ## Current Session Status
 

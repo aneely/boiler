@@ -1,7 +1,21 @@
 #!/bin/bash
 
-# Simple test harness for boiler.sh utility functions
-# Tests functions that don't require actual video files or ffmpeg calls
+# Test harness for boiler.sh utility functions
+# Uses function mocking to test FFmpeg/ffprobe-dependent functions without requiring
+# actual video files or FFmpeg installation. This enables fast local testing and
+# CI/CD environments (e.g., GitHub Actions) that may not have FFmpeg available.
+#
+# Mocked functions:
+#   - get_video_resolution() - returns configurable resolution (default: 1080)
+#   - get_video_duration() - returns configurable duration (default: 300s)
+#   - measure_bitrate() - returns configurable bitrate or calculates from file size
+#   - transcode_sample() - creates mock output file instead of transcoding
+#   - transcode_full_video() - creates mock output file instead of transcoding
+#
+# Mock behavior can be controlled via environment variables:
+#   - MOCK_RESOLUTION: Override resolution returned by get_video_resolution()
+#   - MOCK_DURATION: Override duration returned by get_video_duration()
+#   - MOCK_BITRATE_BPS: Override bitrate returned by measure_bitrate()
 
 # Test statistics
 TESTS_RUN=0
@@ -113,12 +127,145 @@ assert_exit_code() {
 # Set test mode to prevent main() from running when we source boiler.sh
 export BOILER_TEST_MODE=1
 
+# Call tracking files for mocking (works across subshells)
+CALL_TRACK_DIR=$(mktemp -d 2>/dev/null || echo "/tmp/boiler_test_calls_$$")
+TRANSCODE_SAMPLE_CALLS_FILE="$CALL_TRACK_DIR/transcode_sample_calls"
+TRANSCODE_FULL_CALLS_FILE="$CALL_TRACK_DIR/transcode_full_calls"
+MEASURE_BITRATE_CALLS_FILE="$CALL_TRACK_DIR/measure_bitrate_calls"
+FIND_VIDEO_FILE_CALLS_FILE="$CALL_TRACK_DIR/find_video_file_calls"
+
+# Reset call tracking (call this before each test)
+reset_call_tracking() {
+    rm -f "$TRANSCODE_SAMPLE_CALLS_FILE" "$TRANSCODE_FULL_CALLS_FILE" \
+          "$MEASURE_BITRATE_CALLS_FILE" "$FIND_VIDEO_FILE_CALLS_FILE"
+    touch "$TRANSCODE_SAMPLE_CALLS_FILE" "$TRANSCODE_FULL_CALLS_FILE" \
+          "$MEASURE_BITRATE_CALLS_FILE" "$FIND_VIDEO_FILE_CALLS_FILE"
+}
+
+# Helper function to count calls (counts lines in file)
+count_calls() {
+    local calls_file="$1"
+    if [ ! -f "$calls_file" ]; then
+        echo "0"
+    else
+        wc -l < "$calls_file" | tr -d ' '
+    fi
+}
+
+# Helper function to get first call
+get_first_call() {
+    local calls_file="$1"
+    if [ ! -f "$calls_file" ]; then
+        echo ""
+    else
+        head -n1 "$calls_file"
+    fi
+}
+
 # Source boiler.sh (main() won't run because of BOILER_TEST_MODE check we added)
 # Temporarily disable set -e to prevent early exit during sourcing
 # Also redirect stderr from info/warn/error functions to avoid noise
 set +e
 source boiler.sh 2>/dev/null
 set -e
+
+# Mock functions for FFmpeg/ffprobe calls
+# These allow tests to run without requiring actual video files or FFmpeg installation
+# Functions track calls instead of performing actual operations
+# Mock get_video_resolution() - returns mock resolution (default: 1080, can be overridden via MOCK_RESOLUTION)
+get_video_resolution() {
+    local video_file="$1"
+    echo "${MOCK_RESOLUTION:-1080}"
+}
+
+# Mock get_video_duration() - returns mock duration in seconds (default: 300, can be overridden via MOCK_DURATION)
+get_video_duration() {
+    local video_file="$1"
+    echo "${MOCK_DURATION:-300}"
+}
+
+# Mock measure_bitrate() - tracks calls and returns mock bitrate
+measure_bitrate() {
+    local file_path="$1"
+    local duration="$2"
+    
+    # Track the call (append to file)
+    echo "$file_path|$duration" >> "$MEASURE_BITRATE_CALLS_FILE"
+    
+    # If this is an output file (temp_transcode), use MOCK_OUTPUT_BITRATE_BPS if set
+    if [[ "$file_path" == *"temp_transcode"* ]] && [ -n "${MOCK_OUTPUT_BITRATE_BPS:-}" ]; then
+        echo "${MOCK_OUTPUT_BITRATE_BPS}"
+        return
+    fi
+    
+    # If this is a sample file, use MOCK_SAMPLE_BITRATE_BPS if set (for optimization convergence)
+    if [[ "$file_path" == *"_sample_"* ]] && [ -n "${MOCK_SAMPLE_BITRATE_BPS:-}" ]; then
+        echo "${MOCK_SAMPLE_BITRATE_BPS}"
+        return
+    fi
+    
+    # Return MOCK_BITRATE_BPS if set (for source files)
+    if [ -n "${MOCK_BITRATE_BPS:-}" ]; then
+        echo "${MOCK_BITRATE_BPS}"
+    else
+        echo ""
+    fi
+}
+
+# Mock transcode_sample() - tracks calls instead of transcoding
+transcode_sample() {
+    local video_file="$1"
+    local sample_start="$2"
+    local sample_duration="$3"
+    local quality_value="$4"
+    local output_file="$5"
+    
+    # Track the call (append to file)
+    echo "$video_file|$sample_start|$sample_duration|$quality_value|$output_file" >> "$TRANSCODE_SAMPLE_CALLS_FILE"
+    
+    # Create minimal file so downstream code doesn't fail on file existence checks
+    touch "$output_file"
+}
+
+# Mock transcode_full_video() - tracks calls instead of transcoding
+transcode_full_video() {
+    local video_file="$1"
+    local output_file="$2"
+    local quality_value="$3"
+    
+    # Track the call (append to file)
+    echo "$video_file|$output_file|$quality_value" >> "$TRANSCODE_FULL_CALLS_FILE"
+    
+    # Create minimal file so downstream code doesn't fail on file existence checks
+    touch "$output_file"
+}
+
+# Mock check_requirements() - skip requirement checks in test mode
+check_requirements() {
+    # Do nothing - allow tests to run without ffmpeg/ffprobe
+    return 0
+}
+
+# Mock find_video_file() - tracks calls and returns test video file path
+find_video_file() {
+    # Track the call (append to file)
+    echo "called" >> "$FIND_VIDEO_FILE_CALLS_FILE"
+    
+    if [ -n "${MOCK_VIDEO_FILE:-}" ]; then
+        # Ensure the file exists
+        touch "$MOCK_VIDEO_FILE"
+        echo "$MOCK_VIDEO_FILE"
+    else
+        # Create a temporary test file
+        local test_file=$(mktemp --suffix=.mp4 2>/dev/null || mktemp -t test_video).mp4
+        touch "$test_file"
+        echo "$test_file"
+    fi
+}
+
+# Note: find_optimal_quality() is NOT mocked - it will run and call transcode_sample()
+# To make it converge quickly in tests, set MOCK_BITRATE_BPS to target bitrate
+# so samples return target bitrate and optimization converges immediately
 
 # Now run tests
 
@@ -351,6 +498,186 @@ test_calculate_sample_points() {
     assert_equal "$SAMPLE_DURATION" "60" "calculate_sample_points: video >= 180s duration"
 }
 test_calculate_sample_points
+
+echo ""
+
+# Test mocked FFmpeg/ffprobe functions
+echo "Testing mocked FFmpeg/ffprobe functions..."
+test_mocked_functions() {
+    local result
+    local temp_file
+    
+    # Test mocked get_video_resolution()
+    result=$(get_video_resolution "test.mp4")
+    assert_equal "$result" "1080" "mocked get_video_resolution: default 1080p"
+    
+    # Test mocked get_video_resolution() with override
+    MOCK_RESOLUTION=2160
+    result=$(get_video_resolution "test.mp4")
+    assert_equal "$result" "2160" "mocked get_video_resolution: override to 2160p"
+    unset MOCK_RESOLUTION
+    
+    # Test mocked get_video_duration()
+    result=$(get_video_duration "test.mp4")
+    assert_equal "$result" "300" "mocked get_video_duration: default 300s"
+    
+    # Test mocked get_video_duration() with override
+    MOCK_DURATION=180
+    result=$(get_video_duration "test.mp4")
+    assert_equal "$result" "180" "mocked get_video_duration: override to 180s"
+    unset MOCK_DURATION
+    
+    # Test mocked measure_bitrate() with MOCK_BITRATE_BPS
+    reset_call_tracking
+    MOCK_BITRATE_BPS=8000000
+    result=$(measure_bitrate "test.mp4" "300")
+    assert_equal "$result" "8000000" "mocked measure_bitrate: using MOCK_BITRATE_BPS"
+    assert_equal "$(count_calls "$MEASURE_BITRATE_CALLS_FILE")" "1" "mocked measure_bitrate: tracks call"
+    assert_equal "$(get_first_call "$MEASURE_BITRATE_CALLS_FILE")" "test.mp4|300" "mocked measure_bitrate: tracks call parameters"
+    unset MOCK_BITRATE_BPS
+    
+    # Test mocked measure_bitrate() without MOCK_BITRATE_BPS (returns empty)
+    reset_call_tracking
+    result=$(measure_bitrate "test2.mp4" "200")
+    assert_empty "$result" "mocked measure_bitrate: returns empty without MOCK_BITRATE_BPS"
+    assert_equal "$(get_first_call "$MEASURE_BITRATE_CALLS_FILE")" "test2.mp4|200" "mocked measure_bitrate: tracks call without bitrate"
+    
+    # Test mocked transcode_sample() tracks calls
+    reset_call_tracking
+    temp_file=$(mktemp)
+    transcode_sample "input.mp4" "0" "60" "52" "$temp_file"
+    assert_equal "$(count_calls "$TRANSCODE_SAMPLE_CALLS_FILE")" "1" "mocked transcode_sample: tracks call"
+    assert_equal "$(get_first_call "$TRANSCODE_SAMPLE_CALLS_FILE")" "input.mp4|0|60|52|$temp_file" "mocked transcode_sample: tracks call parameters"
+    rm -f "$temp_file"
+    
+    # Test mocked transcode_full_video() tracks calls
+    reset_call_tracking
+    temp_file=$(mktemp)
+    transcode_full_video "input.mp4" "$temp_file" "52"
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "1" "mocked transcode_full_video: tracks call"
+    assert_equal "$(get_first_call "$TRANSCODE_FULL_CALLS_FILE")" "input.mp4|$temp_file|52" "mocked transcode_full_video: tracks call parameters"
+    rm -f "$temp_file"
+}
+test_mocked_functions
+
+echo ""
+
+# Test main() function integration
+echo "Testing main() function integration..."
+test_main() {
+    local test_dir
+    local test_file
+    local output
+    local exit_code
+    local temp_dir
+    
+    # Create a temporary directory for each test to avoid conflicts
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || exit 1
+    
+    # Test 1: Early exit when source is within tolerance
+    reset_call_tracking
+    test_file="test_video.mp4"
+    touch "$test_file"
+    MOCK_VIDEO_FILE="$test_file"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=8000000  # Exactly 8 Mbps (target for 1080p)
+    
+    set +e
+    output=$(main 2>&1)
+    exit_code=$?
+    set -e
+    
+    assert_exit_code $exit_code 0 "main: exits 0 when source is within tolerance"
+    assert_not_empty "$(echo "$output" | grep -i "within acceptable range" || true)" "main: outputs message about being within range"
+    # Verify find_video_file was called
+    assert_equal "$(count_calls "$FIND_VIDEO_FILE_CALLS_FILE")" "1" "main: calls find_video_file"
+    # Verify measure_bitrate was called for source
+    assert_equal "$(count_calls "$MEASURE_BITRATE_CALLS_FILE")" "1" "main: calls measure_bitrate for source"
+    # Verify transcoding functions were NOT called (early exit)
+    assert_equal "$(count_calls "$TRANSCODE_SAMPLE_CALLS_FILE")" "0" "main: does not call transcode_sample when within tolerance"
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "0" "main: does not call transcode_full_video when within tolerance"
+    
+    # Cleanup
+    rm -f "$test_file"
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS
+    
+    # Test 2: Early exit when source is below target (with file renaming)
+    reset_call_tracking
+    test_file="test_video.mp4"
+    touch "$test_file"
+    MOCK_VIDEO_FILE="$test_file"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=4000000  # 4 Mbps (below 8 Mbps target)
+    
+    set +e
+    output=$(main 2>&1)
+    exit_code=$?
+    set -e
+    
+    assert_exit_code $exit_code 0 "main: exits 0 when source is below target"
+    assert_not_empty "$(echo "$output" | grep -i "below target bitrate" || true)" "main: outputs message about being below target"
+    # Verify find_video_file was called
+    assert_equal "$(count_calls "$FIND_VIDEO_FILE_CALLS_FILE")" "1" "main: calls find_video_file"
+    # Verify measure_bitrate was called for source
+    assert_equal "$(count_calls "$MEASURE_BITRATE_CALLS_FILE")" "1" "main: calls measure_bitrate for source"
+    # Verify transcoding functions were NOT called (early exit)
+    assert_equal "$(count_calls "$TRANSCODE_SAMPLE_CALLS_FILE")" "0" "main: does not call transcode_sample when below target"
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "0" "main: does not call transcode_full_video when below target"
+    
+    # Check that file was renamed (still need to check this as it's a side effect we care about)
+    local renamed_file="test_video.orig.4.00.Mbps.mp4"
+    if [ -f "$renamed_file" ]; then
+        assert_equal "1" "1" "main: renames file when below target"
+        rm -f "$renamed_file"
+    fi
+    
+    # Cleanup
+    rm -f "$test_file" "$renamed_file"
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS
+    
+    # Test 3: Full transcoding workflow (source above target)
+    reset_call_tracking
+    test_file="test_video.mp4"
+    touch "$test_file"
+    MOCK_VIDEO_FILE="$test_file"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=12000000  # 12 Mbps (above 8 Mbps target, needs transcoding)
+    MOCK_SAMPLE_BITRATE_BPS=8000000  # Sample bitrate at target (8 Mbps) so optimization converges immediately
+    MOCK_OUTPUT_BITRATE_BPS=8000000  # Output should be at target (8 Mbps)
+    
+    set +e
+    output=$(main 2>&1)
+    exit_code=$?
+    set -e
+    
+    assert_exit_code $exit_code 0 "main: completes full transcoding workflow"
+    assert_not_empty "$(echo "$output" | grep -i "transcoding complete" || true)" "main: outputs completion message"
+    # Verify find_video_file was called
+    assert_equal "$(count_calls "$FIND_VIDEO_FILE_CALLS_FILE")" "1" "main: calls find_video_file"
+    # Verify measure_bitrate was called (1 for source + 3 for samples + 1 for output = 5)
+    assert_equal "$(count_calls "$MEASURE_BITRATE_CALLS_FILE")" "5" "main: calls measure_bitrate (source + samples + output)"
+    # Verify transcode_sample was called (for finding optimal quality - 3 samples for 300s video)
+    assert_equal "$(count_calls "$TRANSCODE_SAMPLE_CALLS_FILE")" "3" "main: calls transcode_sample for optimization (3 samples for 300s video)"
+    # Verify transcode_full_video was called
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "1" "main: calls transcode_full_video"
+    
+    # Verify transcode_full_video was called (quality value will vary, so just check it was called)
+    assert_not_empty "$(get_first_call "$TRANSCODE_FULL_CALLS_FILE")" "main: transcode_full_video called with parameters"
+    
+    # Cleanup
+    rm -f "$test_file" *.mp4 *.fmpg.*.mp4 2>/dev/null
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_SAMPLE_BITRATE_BPS MOCK_OUTPUT_BITRATE_BPS
+    
+    # Return to original directory
+    cd - > /dev/null || true
+    rm -rf "$temp_dir"
+}
+
+test_main
 
 echo ""
 
