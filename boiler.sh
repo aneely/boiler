@@ -523,6 +523,64 @@ find_optimal_quality() {
     echo "$test_quality"
 }
 
+# Calculate adjusted quality value based on actual bitrate vs target bitrate
+# Uses the same proportional adjustment algorithm as find_optimal_quality
+# Arguments: current_quality, actual_bitrate_bps, target_bitrate_bps
+# Returns: adjusted quality value
+calculate_adjusted_quality() {
+    local current_quality=$(sanitize_value "$1")
+    local actual_bitrate_bps=$(sanitize_value "$2")
+    local target_bitrate_bps=$(sanitize_value "$3")
+    
+    local min_step=1      # Minimum adjustment step (for fine-tuning when close)
+    local max_step=10     # Maximum adjustment step (for large corrections when far off)
+    local quality_adjustment=0
+    
+    if (( $(echo "$actual_bitrate_bps < $target_bitrate_bps" | bc -l) )); then
+        # Actual bitrate too low, need higher quality (increase quality value)
+        # Calculate ratio: how far below target are we? (0.0 = at target, 0.5 = 50% of target, etc.)
+        local ratio=$(echo "scale=4; $actual_bitrate_bps / $target_bitrate_bps" | bc | tr -d '\n\r')
+        # Calculate adjustment: scale from min_step to max_step based on how far off we are
+        local distance_from_target=$(echo "scale=4; 1 - $ratio" | bc | tr -d '\n\r')
+        # Calculate adjustment and round to nearest integer
+        local adjustment_float=$(echo "scale=4; $min_step + ($max_step - $min_step) * $distance_from_target" | bc | tr -d '\n\r')
+        quality_adjustment=$(printf "%.0f" "$adjustment_float" | tr -d '\n\r' | xargs)
+        # Ensure it's at least min_step
+        if [ "$quality_adjustment" -lt "$min_step" ]; then
+            quality_adjustment=$min_step
+        fi
+        
+        current_quality=$((current_quality + quality_adjustment))
+        if [ $current_quality -gt 100 ]; then
+            current_quality=100  # Maximum quality value (highest quality/bitrate)
+        fi
+    else
+        # Actual bitrate too high, need lower quality (decrease quality value)
+        # Calculate ratio: how far above target are we? (1.0 = at target, 2.0 = 200% of target, etc.)
+        local ratio=$(echo "scale=4; $actual_bitrate_bps / $target_bitrate_bps" | bc | tr -d '\n\r')
+        # Calculate adjustment: scale from min_step to max_step based on how far off we are
+        local distance_from_target=$(echo "scale=4; $ratio - 1" | bc | tr -d '\n\r')
+        # Cap distance at reasonable maximum (e.g., if ratio is 3.0, treat as 2.0 for adjustment calculation)
+        if (( $(echo "$distance_from_target > 1.0" | bc -l) )); then
+            distance_from_target=1.0
+        fi
+        # Calculate adjustment and round to nearest integer
+        local adjustment_float=$(echo "scale=4; $min_step + ($max_step - $min_step) * $distance_from_target" | bc | tr -d '\n\r')
+        quality_adjustment=$(printf "%.0f" "$adjustment_float" | tr -d '\n\r' | xargs)
+        # Ensure it's at least min_step
+        if [ "$quality_adjustment" -lt "$min_step" ]; then
+            quality_adjustment=$min_step
+        fi
+        
+        current_quality=$((current_quality - quality_adjustment))
+        if [ $current_quality -lt 0 ]; then
+            current_quality=0  # Minimum quality value (lowest quality/bitrate)
+        fi
+    fi
+    
+    echo "$current_quality"
+}
+
 # Transcode full video with optimal settings
 transcode_full_video() {
     local video_file="$1"
@@ -629,6 +687,40 @@ main() {
     
     # Calculate actual bitrate in Mbps (with 2 decimal places)
     local actual_bitrate_mbps=$(bps_to_mbps "$actual_bitrate_bps")
+    
+    # Check if final bitrate is within tolerance - if not, do one more pass with adjusted quality
+    if ! is_within_tolerance "$actual_bitrate_bps" "$LOWER_BOUND" "$UPPER_BOUND"; then
+        warn "First pass bitrate (${actual_bitrate_mbps} Mbps) is outside tolerance range. Performing second pass with adjusted quality..."
+        
+        # Calculate adjusted quality value based on actual vs target bitrate
+        local adjusted_quality=$(calculate_adjusted_quality "$OPTIMAL_QUALITY" "$actual_bitrate_bps" "$TARGET_BITRATE_BPS")
+        local target_bitrate_mbps=$(bps_to_mbps "$TARGET_BITRATE_BPS")
+        info "Adjusting quality from ${OPTIMAL_QUALITY} to ${adjusted_quality} based on actual bitrate (${actual_bitrate_mbps} Mbps vs ${target_bitrate_mbps} Mbps target)"
+        
+        # Remove first pass temporary file
+        rm -f "$temp_output_file"
+        
+        # Transcode again with adjusted quality
+        transcode_full_video "$VIDEO_FILE" "$temp_output_file" "$adjusted_quality"
+        
+        # Measure actual bitrate of second pass
+        actual_bitrate_bps=$(measure_bitrate "$temp_output_file" "$VIDEO_DURATION")
+        if [ -z "$actual_bitrate_bps" ]; then
+            error "Could not measure bitrate of second pass transcoded file"
+            rm -f "$temp_output_file"
+            exit 1
+        fi
+        
+        # Recalculate actual bitrate in Mbps
+        actual_bitrate_mbps=$(bps_to_mbps "$actual_bitrate_bps")
+        
+        # Check if second pass is within tolerance (informational only - we'll use this result regardless)
+        if is_within_tolerance "$actual_bitrate_bps" "$LOWER_BOUND" "$UPPER_BOUND"; then
+            info "Second pass bitrate (${actual_bitrate_mbps} Mbps) is within tolerance range"
+        else
+            warn "Second pass bitrate (${actual_bitrate_mbps} Mbps) is still outside tolerance range, but using this result"
+        fi
+    fi
     
     # Generate final output filename: {base}.fmpg.{actual_bitrate}.Mbps.{ext}
     OUTPUT_FILE="${BASE_NAME}.fmpg.${actual_bitrate_mbps}.Mbps.${FILE_EXTENSION}"
