@@ -28,11 +28,22 @@ This ensures the user maintains control over the development direction and can m
 
 ### Testing Before Committing
 
-**Before committing any changes:**
-- **ALWAYS run the test suite** (`bash test_boiler.sh`) to ensure all tests pass
-- Verify that no regressions were introduced
-- If tests fail, fix the issues before committing
-- Only commit when all tests pass (exit code 0)
+**CRITICAL: MANDATORY TESTING REQUIREMENT**
+
+**Before committing ANY changes, you MUST:**
+1. **Run the test suite**: Execute `bash test_boiler.sh` and verify it completes successfully
+2. **Verify exit code**: The test suite MUST exit with code 0 (all tests passing)
+3. **Check test output**: Review the test summary to confirm all tests passed (e.g., "Passed: 85, Failed: 0")
+4. **Fix any failures**: If ANY tests fail, you MUST fix the issues before committing
+5. **NEVER commit without running tests**: Do not skip this step, even for minor changes
+
+**This is a hard requirement - commits made without running tests are considered incomplete and should be amended.**
+
+The test suite verifies:
+- All utility functions work correctly
+- No regressions were introduced
+- Integration tests pass (main() function behavior)
+- Mocked functions behave as expected
 
 This ensures code quality and prevents regressions from being committed to the repository.
 
