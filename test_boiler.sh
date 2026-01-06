@@ -133,13 +133,14 @@ TRANSCODE_SAMPLE_CALLS_FILE="$CALL_TRACK_DIR/transcode_sample_calls"
 TRANSCODE_FULL_CALLS_FILE="$CALL_TRACK_DIR/transcode_full_calls"
 MEASURE_BITRATE_CALLS_FILE="$CALL_TRACK_DIR/measure_bitrate_calls"
 FIND_VIDEO_FILE_CALLS_FILE="$CALL_TRACK_DIR/find_video_file_calls"
+FIND_ALL_VIDEO_FILES_CALLS_FILE="$CALL_TRACK_DIR/find_all_video_files_calls"
 
 # Reset call tracking (call this before each test)
 reset_call_tracking() {
     rm -f "$TRANSCODE_SAMPLE_CALLS_FILE" "$TRANSCODE_FULL_CALLS_FILE" \
-          "$MEASURE_BITRATE_CALLS_FILE" "$FIND_VIDEO_FILE_CALLS_FILE"
+          "$MEASURE_BITRATE_CALLS_FILE" "$FIND_VIDEO_FILE_CALLS_FILE" "$FIND_ALL_VIDEO_FILES_CALLS_FILE"
     touch "$TRANSCODE_SAMPLE_CALLS_FILE" "$TRANSCODE_FULL_CALLS_FILE" \
-          "$MEASURE_BITRATE_CALLS_FILE" "$FIND_VIDEO_FILE_CALLS_FILE"
+          "$MEASURE_BITRATE_CALLS_FILE" "$FIND_VIDEO_FILE_CALLS_FILE" "$FIND_ALL_VIDEO_FILES_CALLS_FILE"
 }
 
 # Helper function to count calls (counts lines in file)
@@ -254,6 +255,23 @@ transcode_full_video() {
 check_requirements() {
     # Do nothing - allow tests to run without ffmpeg/ffprobe
     return 0
+}
+
+# Mock find_all_video_files() - tracks calls and returns test video file path(s)
+find_all_video_files() {
+    # Track the call (append to file)
+    echo "called" >> "$FIND_ALL_VIDEO_FILES_CALLS_FILE"
+    
+    if [ -n "${MOCK_VIDEO_FILE:-}" ]; then
+        # Ensure the file exists
+        touch "$MOCK_VIDEO_FILE"
+        echo "$MOCK_VIDEO_FILE"
+    else
+        # Create a temporary test file
+        local test_file=$(mktemp --suffix=.mp4 2>/dev/null || mktemp -t test_video).mp4
+        touch "$test_file"
+        echo "$test_file"
+    fi
 }
 
 # Mock find_video_file() - tracks calls and returns test video file path
@@ -511,6 +529,123 @@ test_calculate_sample_points
 
 echo ""
 
+# Test should_skip_file() and find_all_video_files()
+echo "Testing should_skip_file() and find_all_video_files()..."
+test_skip_and_find_functions() {
+    local temp_dir
+    local result
+    
+    # Create a temporary directory for testing
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || exit 1
+    
+    # Test should_skip_file: files with skip markers
+    should_skip_file "test.hbrk.10.25.Mbps.mp4" && result="skip" || result="process"
+    assert_equal "$result" "skip" "should_skip_file: skips .hbrk. files"
+    
+    should_skip_file "test.fmpg.10.25.Mbps.mp4" && result="skip" || result="process"
+    assert_equal "$result" "skip" "should_skip_file: skips .fmpg. files"
+    
+    should_skip_file "test.orig.2.90.Mbps.mp4" && result="skip" || result="process"
+    assert_equal "$result" "skip" "should_skip_file: skips .orig. files"
+    
+    # Test should_skip_file: normal files should not be skipped
+    should_skip_file "normal_video.mp4" && result="skip" || result="process"
+    assert_equal "$result" "process" "should_skip_file: processes normal files"
+    
+    # Test find_all_video_files: finds all non-skipped files
+    # Test in a clean subshell to avoid mock interference
+    touch video1.mp4 video2.mp4 video3.mp4
+    touch skip.hbrk.mp4 skip.fmpg.mp4 skip.orig.mp4
+    
+    local found_files
+    # Use a subshell with fresh boiler.sh source to test real function
+    found_files=$(bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; find_all_video_files" | sort)
+    local expected="$(echo -e './video1.mp4\n./video2.mp4\n./video3.mp4' | sort)"
+    assert_equal "$found_files" "$expected" "find_all_video_files: finds all non-skipped files"
+    
+    # Test find_all_video_files: skips files with markers
+    local count=$(bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; find_all_video_files" | wc -l | tr -d ' ')
+    assert_equal "$count" "3" "find_all_video_files: skips files with .hbrk., .fmpg., .orig. markers"
+    
+    # Test find_all_video_files: returns empty when no files
+    rm -f *.mp4
+    found_files=$(bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; find_all_video_files")
+    assert_equal "$found_files" "" "find_all_video_files: returns empty when no files"
+    
+    # Cleanup
+    cd - > /dev/null || true
+    rm -rf "$temp_dir"
+}
+test_skip_and_find_functions
+
+echo ""
+
+# Test extract_original_filename() and matching logic
+echo "Testing extract_original_filename() and original/encoded matching..."
+test_extract_and_matching() {
+    local temp_dir
+    local result
+    
+    # Create a temporary directory for testing
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || exit 1
+    
+    # Test extract_original_filename: .fmpg. pattern
+    result=$(bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; extract_original_filename 'video.fmpg.10.25.Mbps.mp4'")
+    assert_equal "$result" "video.mp4" "extract_original_filename: extracts from .fmpg. pattern"
+    
+    # Test extract_original_filename: .orig. pattern
+    result=$(bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; extract_original_filename 'video.orig.2.90.Mbps.mp4'")
+    assert_equal "$result" "video.mp4" "extract_original_filename: extracts from .orig. pattern"
+    
+    # Test extract_original_filename: .hbrk. pattern
+    result=$(bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; extract_original_filename 'video.hbrk.10.25.Mbps.mp4'")
+    assert_equal "$result" "video.mp4" "extract_original_filename: extracts from .hbrk. pattern"
+    
+    # Test has_original_file: original exists
+    touch video.mp4 video.fmpg.10.25.Mbps.mp4
+    bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; has_original_file 'video.fmpg.10.25.Mbps.mp4'" && result="exists" || result="missing"
+    assert_equal "$result" "exists" "has_original_file: detects original when it exists"
+    
+    # Test has_original_file: original missing
+    rm -f video.mp4
+    bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; has_original_file 'video.fmpg.10.25.Mbps.mp4'" && result="exists" || result="missing"
+    assert_equal "$result" "missing" "has_original_file: detects missing original"
+    
+    # Test has_encoded_version: encoded exists
+    touch video.mp4 video.fmpg.10.25.Mbps.mp4
+    bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; has_encoded_version 'video.mp4'" && result="has_encoded" || result="no_encoded"
+    assert_equal "$result" "has_encoded" "has_encoded_version: detects encoded version when it exists"
+    
+    # Test has_encoded_version: no encoded version
+    rm -f video.fmpg.10.25.Mbps.mp4
+    bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; has_encoded_version 'video.mp4'" && result="has_encoded" || result="no_encoded"
+    assert_equal "$result" "no_encoded" "has_encoded_version: detects when no encoded version exists"
+    
+    # Test should_skip_file: skips original when encoded exists
+    touch video.mp4 video.fmpg.10.25.Mbps.mp4
+    bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; should_skip_file 'video.mp4'" && result="skip" || result="process"
+    assert_equal "$result" "skip" "should_skip_file: skips original when encoded version exists"
+    
+    # Test should_skip_file: processes original when no encoded version
+    rm -f video.fmpg.10.25.Mbps.mp4
+    bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; should_skip_file 'video.mp4'" && result="skip" || result="process"
+    assert_equal "$result" "process" "should_skip_file: processes original when no encoded version"
+    
+    # Test find_all_video_files: skips both original and encoded when both exist
+    touch video.mp4 video.fmpg.10.25.Mbps.mp4 another.mkv
+    local found_files=$(bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; find_all_video_files")
+    assert_equal "$found_files" "./another.mkv" "find_all_video_files: skips both original and encoded when both exist"
+    
+    # Cleanup
+    cd - > /dev/null || true
+    rm -rf "$temp_dir"
+}
+test_extract_and_matching
+
+echo ""
+
 # Test mocked FFmpeg/ffprobe functions
 echo "Testing mocked FFmpeg/ffprobe functions..."
 test_mocked_functions() {
@@ -601,8 +736,8 @@ test_main() {
     
     assert_exit_code $exit_code 0 "main: exits 0 when source is within tolerance"
     assert_not_empty "$(echo "$output" | grep -i "within acceptable range" || true)" "main: outputs message about being within range"
-    # Verify find_video_file was called
-    assert_equal "$(count_calls "$FIND_VIDEO_FILE_CALLS_FILE")" "1" "main: calls find_video_file"
+    # Verify find_all_video_files was called
+    assert_equal "$(count_calls "$FIND_ALL_VIDEO_FILES_CALLS_FILE")" "1" "main: calls find_all_video_files"
     # Verify measure_bitrate was called for source
     assert_equal "$(count_calls "$MEASURE_BITRATE_CALLS_FILE")" "1" "main: calls measure_bitrate for source"
     # Verify transcoding functions were NOT called (early exit)
@@ -629,8 +764,8 @@ test_main() {
     
     assert_exit_code $exit_code 0 "main: exits 0 when source is below target"
     assert_not_empty "$(echo "$output" | grep -i "below target bitrate" || true)" "main: outputs message about being below target"
-    # Verify find_video_file was called
-    assert_equal "$(count_calls "$FIND_VIDEO_FILE_CALLS_FILE")" "1" "main: calls find_video_file"
+    # Verify find_all_video_files was called
+    assert_equal "$(count_calls "$FIND_ALL_VIDEO_FILES_CALLS_FILE")" "1" "main: calls find_all_video_files"
     # Verify measure_bitrate was called for source
     assert_equal "$(count_calls "$MEASURE_BITRATE_CALLS_FILE")" "1" "main: calls measure_bitrate for source"
     # Verify transcoding functions were NOT called (early exit)
@@ -666,8 +801,8 @@ test_main() {
     
     assert_exit_code $exit_code 0 "main: completes full transcoding workflow"
     assert_not_empty "$(echo "$output" | grep -i "transcoding complete" || true)" "main: outputs completion message"
-    # Verify find_video_file was called
-    assert_equal "$(count_calls "$FIND_VIDEO_FILE_CALLS_FILE")" "1" "main: calls find_video_file"
+    # Verify find_all_video_files was called
+    assert_equal "$(count_calls "$FIND_ALL_VIDEO_FILES_CALLS_FILE")" "1" "main: calls find_all_video_files"
     # Verify measure_bitrate was called (1 for source + 3 for samples + 1 for output = 5)
     assert_equal "$(count_calls "$MEASURE_BITRATE_CALLS_FILE")" "5" "main: calls measure_bitrate (source + samples + output)"
     # Verify transcode_sample was called (for finding optimal quality - 3 samples for 300s video)
@@ -702,8 +837,8 @@ test_main() {
     assert_exit_code $exit_code 0 "main: completes transcoding with second pass"
     assert_not_empty "$(echo "$output" | grep -i "second pass" || true)" "main: outputs second pass message"
     assert_not_empty "$(echo "$output" | grep -i "outside tolerance" || true)" "main: outputs outside tolerance warning"
-    # Verify find_video_file was called
-    assert_equal "$(count_calls "$FIND_VIDEO_FILE_CALLS_FILE")" "1" "main: calls find_video_file"
+    # Verify find_all_video_files was called
+    assert_equal "$(count_calls "$FIND_ALL_VIDEO_FILES_CALLS_FILE")" "1" "main: calls find_all_video_files"
     # Verify measure_bitrate was called (1 for source + 3 for samples + 2 for output passes = 6)
     assert_equal "$(count_calls "$MEASURE_BITRATE_CALLS_FILE")" "6" "main: calls measure_bitrate (source + samples + 2 output passes)"
     # Verify transcode_sample was called (for finding optimal quality - 3 samples for 300s video)

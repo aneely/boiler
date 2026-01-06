@@ -58,25 +58,189 @@ check_requirements() {
     fi
 }
 
-# Find video files in current directory
-find_video_file() {
-    local video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv")
-    local video_file=""
+# Extract original filename from an encoded filename
+# Arguments: encoded_filename (e.g., "video.fmpg.10.25.Mbps.mp4")
+# Returns: original filename (e.g., "video.mp4") via echo
+extract_original_filename() {
+    local encoded_file="$1"
+    local basename=$(basename "$encoded_file")
+    local dirname=$(dirname "$encoded_file")
+    
+    # Patterns to match: {base}.{marker}.{rest}.{ext}
+    # Markers: .fmpg., .orig., .hbrk.
+    local original_name=""
+    
+    # Try .fmpg. pattern: {base}.fmpg.{bitrate}.Mbps.{ext}
+    if [[ "$basename" == *".fmpg."* ]]; then
+        # Extract base name (everything before .fmpg.)
+        local base_part="${basename%%.fmpg.*}"
+        # Extract extension (everything after last dot)
+        local ext_part="${basename##*.}"
+        original_name="${base_part}.${ext_part}"
+    # Try .orig. pattern: {base}.orig.{bitrate}.Mbps.{ext}
+    elif [[ "$basename" == *".orig."* ]]; then
+        local base_part="${basename%%.orig.*}"
+        local ext_part="${basename##*.}"
+        original_name="${base_part}.${ext_part}"
+    # Try .hbrk. pattern: {base}.hbrk.{rest}.{ext}
+    elif [[ "$basename" == *".hbrk."* ]]; then
+        local base_part="${basename%%.hbrk.*}"
+        local ext_part="${basename##*.}"
+        original_name="${base_part}.${ext_part}"
+    fi
+    
+    # If we found an original name and have a directory, prepend it
+    if [ -n "$original_name" ] && [ "$dirname" != "." ]; then
+        echo "${dirname}/${original_name}"
+    elif [ -n "$original_name" ]; then
+        echo "$original_name"
+    else
+        echo ""
+    fi
+}
 
-    for ext in "${video_extensions[@]}"; do
-        local found=$(find . -maxdepth 1 -type f -iname "*.${ext}" | head -1)
+# Check if an encoded file has its original file in the current directory
+# Arguments: encoded_filename
+# Returns: 0 (true) if original exists, 1 (false) if not
+has_original_file() {
+    local encoded_file="$1"
+    local original_file=$(extract_original_filename "$encoded_file")
+    
+    if [ -z "$original_file" ]; then
+        return 1  # Could not extract original filename
+    fi
+    
+    # Check if original file exists
+    if [ -f "$original_file" ]; then
+        return 0  # Original exists
+    fi
+    
+    return 1  # Original does not exist
+}
+
+# Check if a potential original file has an encoded version in the current directory
+# Arguments: potential_original_filename
+# Returns: 0 (true) if encoded version exists, 1 (false) if not
+has_encoded_version() {
+    local original_file="$1"
+    local basename=$(basename "$original_file")
+    local dirname=$(dirname "$original_file")
+    
+    # Extract base name and extension
+    local base_part="${basename%.*}"
+    local ext_part="${basename##*.}"
+    
+    # Check for encoded versions by looking for files that start with {base}.{marker}
+    # and end with .{ext}
+    local markers=("fmpg" "orig" "hbrk")
+    
+    for marker in "${markers[@]}"; do
+        # Use find to look for files matching: {base}.{marker}.*.{ext}
+        # We'll check if any file starts with the base and marker pattern
+        local pattern="${base_part}.${marker}."
+        local found=$(find . -maxdepth 1 -type f -iname "${pattern}*.${ext_part}" 2>/dev/null | head -1)
         if [ -n "$found" ]; then
-            video_file="$found"
-            break
+            return 0  # Found encoded version
         fi
     done
+    
+    return 1  # No encoded version found
+}
 
-    if [ -z "$video_file" ]; then
-        error "No video file found in current directory"
+# Check if a file should be skipped based on filename markers or original/encoded relationship
+# Returns 0 (true) if file should be skipped, 1 (false) if it should be processed
+# Arguments: filename
+should_skip_file() {
+    local filename="$1"
+    local basename=$(basename "$filename")
+    
+    # Check if filename contains any of the skip markers
+    if [[ "$basename" == *".hbrk."* ]] || \
+       [[ "$basename" == *".fmpg."* ]] || \
+       [[ "$basename" == *".orig."* ]]; then
+        return 0  # Should skip
+    fi
+    
+    # Check if this file has an encoded version (skip original if encoded exists)
+    if has_encoded_version "$filename"; then
+        return 0  # Should skip (encoded version exists)
+    fi
+    
+    return 1  # Should process
+}
+
+# Find all video files in current directory (excluding skipped files)
+# Returns all matching video files, one per line
+find_all_video_files() {
+    local video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv")
+    local video_files=()
+
+    for ext in "${video_extensions[@]}"; do
+        while IFS= read -r found; do
+            if [ -n "$found" ]; then
+                # Skip files that contain markers indicating they're already processed
+                if ! should_skip_file "$found"; then
+                    video_files+=("$found")
+                fi
+            fi
+        done < <(find . -maxdepth 1 -type f -iname "*.${ext}" 2>/dev/null)
+    done
+
+    # Print each file on a separate line
+    for file in "${video_files[@]}"; do
+        echo "$file"
+    done
+}
+
+# Find all skipped video files (files with .hbrk., .fmpg., or .orig. markers)
+# Returns all skipped video files, one per line
+find_skipped_video_files() {
+    local video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv")
+    local skipped_files=()
+
+    for ext in "${video_extensions[@]}"; do
+        while IFS= read -r found; do
+            if [ -n "$found" ]; then
+                # Only include files that should be skipped
+                if should_skip_file "$found"; then
+                    skipped_files+=("$found")
+                fi
+            fi
+        done < <(find . -maxdepth 1 -type f -iname "*.${ext}" 2>/dev/null)
+    done
+
+    # Print each file on a separate line
+    for file in "${skipped_files[@]}"; do
+        echo "$file"
+    done
+}
+
+# Find first video file in current directory (for backward compatibility)
+find_video_file() {
+    local first_file=$(find_all_video_files | head -1)
+    
+    if [ -z "$first_file" ]; then
+        # Check if there are skipped files to mention
+        local skipped_files=()
+        while IFS= read -r line; do
+            if [ -n "$line" ]; then
+                skipped_files+=("$line")
+            fi
+        done < <(find_skipped_video_files)
+        
+        if [ ${#skipped_files[@]} -gt 0 ]; then
+            error "No video files to encode found in current directory"
+            info "The following files are already encoded and were skipped:"
+            for skipped_file in "${skipped_files[@]}"; do
+                info "  - $(basename "$skipped_file")"
+            done
+        else
+            error "No video file to encode found in current directory"
+        fi
         exit 1
     fi
 
-    echo "$video_file"
+    echo "$first_file"
 }
 
 # Get video resolution using ffprobe
@@ -605,13 +769,24 @@ cleanup_samples() {
     rm -f "${video_file%.*}_sample"*.mp4
 }
 
-# Main function
-main() {
-    # Check requirements
-    check_requirements
+# Transcode video function
+# Arguments: [video_file] - Optional. If provided, processes that file. Otherwise finds first file in current directory.
+transcode_video() {
+    local provided_file="$1"
     
-    # Find video file
-    VIDEO_FILE=$(find_video_file)
+    # Check requirements (only check once, not for each file)
+    if [ -z "${REQUIREMENTS_CHECKED:-}" ]; then
+        check_requirements
+        export REQUIREMENTS_CHECKED=1
+    fi
+    
+    # Use provided file or find video file
+    if [ -n "$provided_file" ]; then
+        VIDEO_FILE="$provided_file"
+    else
+        VIDEO_FILE=$(find_video_file)
+    fi
+    
     info "Found video file: $VIDEO_FILE"
     
     # Get video properties
@@ -638,7 +813,7 @@ main() {
             info "Source video bitrate: ${SOURCE_BITRATE_MBPS} Mbps"
             info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps (acceptable range: ±5%)"
             info "Source video is already within acceptable range (5% of target). No transcoding needed."
-            exit 0
+            return 0
         fi
         
         # Check if source is already below target (already more compressed than desired)
@@ -657,7 +832,7 @@ main() {
                 info "Renamed file to: $renamed_file"
             fi
             
-            exit 0
+            return 0
         fi
     fi
     
@@ -682,7 +857,7 @@ main() {
     if [ -z "$actual_bitrate_bps" ]; then
         error "Could not measure bitrate of transcoded file"
         rm -f "$temp_output_file"
-        exit 1
+        return 1
     fi
     
     # Calculate actual bitrate in Mbps (with 2 decimal places)
@@ -708,7 +883,7 @@ main() {
         if [ -z "$actual_bitrate_bps" ]; then
             error "Could not measure bitrate of second pass transcoded file"
             rm -f "$temp_output_file"
-            exit 1
+            return 1
         fi
         
         # Recalculate actual bitrate in Mbps
@@ -734,6 +909,60 @@ main() {
     info "Transcoding complete!"
     info "Output file: $OUTPUT_FILE"
     info "Actual bitrate: ${actual_bitrate_mbps} Mbps"
+}
+
+# Main function - processes all video files in current directory
+main() {
+    # Get all video files in current directory (bash 3.2 compatible - no mapfile)
+    local video_files=()
+    while IFS= read -r line; do
+        if [ -n "$line" ]; then
+            video_files+=("$line")
+        fi
+    done < <(find_all_video_files)
+    
+    if [ ${#video_files[@]} -eq 0 ]; then
+        # Check if there are skipped files to mention
+        local skipped_files=()
+        while IFS= read -r line; do
+            if [ -n "$line" ]; then
+                skipped_files+=("$line")
+            fi
+        done < <(find_skipped_video_files)
+        
+        if [ ${#skipped_files[@]} -gt 0 ]; then
+            error "No video files to encode found in current directory"
+            info "The following files are already encoded and were skipped:"
+            for skipped_file in "${skipped_files[@]}"; do
+                info "  - $(basename "$skipped_file")"
+            done
+        else
+            error "No video files to encode found in current directory"
+        fi
+        exit 1
+    fi
+    
+    local total_files=${#video_files[@]}
+    local current_file=0
+    
+    info "Found ${total_files} video file(s) to process"
+    
+    # Process each video file
+    for video_file in "${video_files[@]}"; do
+        current_file=$((current_file + 1))
+        info ""
+        info "Processing file ${current_file}/${total_files}: $(basename "$video_file")"
+        info "=========================================="
+        
+        # Process this file (transcode_video handles its own errors)
+        transcode_video "$video_file" || {
+            warn "Failed to process: $video_file"
+            # Continue with next file instead of exiting
+        }
+    done
+    
+    info ""
+    info "Batch processing complete! Processed ${total_files} file(s)"
 }
 
 # Run main function (unless in test mode)
