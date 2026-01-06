@@ -33,7 +33,7 @@ This ensures the user maintains control over the development direction and can m
 **Before committing ANY changes, you MUST:**
 1. **Run the test suite**: Execute `bash test_boiler.sh` and verify it completes successfully
 2. **Verify exit code**: The test suite MUST exit with code 0 (all tests passing)
-3. **Check test output**: Review the test summary to confirm all tests passed (e.g., "Passed: 111, Failed: 0")
+3. **Check test output**: Review the test summary to confirm all tests passed (e.g., "Passed: 138, Failed: 0")
 4. **Fix any failures**: If ANY tests fail, you MUST fix the issues before committing
 5. **NEVER commit without running tests**: Do not skip this step, even for minor changes
 

@@ -8,8 +8,8 @@ A simplified command-line tool for transcoding video files with automatic qualit
 - 🔍 **Quality optimization** - Iteratively finds optimal bitrate settings to hit target bitrates
 - 🚀 **Hardware acceleration** - Uses Apple VideoToolbox for fast encoding on macOS
 - 📊 **Progress feedback** - Color-coded output with clear status messages
-- ⚡ **Fast iteration** - Uses multi-point sampling (3 samples per iteration) to quickly find optimal settings
-- ✨ **Smart pre-processing** - Automatically skips transcoding if source video is already within target bitrate tolerance, and skips already-encoded files automatically
+- ⚡ **Fast iteration** - Uses adaptive multi-point sampling (1-3 samples per iteration based on video length) to quickly find optimal settings
+- ✨ **Smart pre-processing** - Automatically skips transcoding if source video is already within target bitrate tolerance, remuxes MKV files to MP4 for QuickLook compatibility when appropriate, and skips already-encoded files automatically
 
 ## Current Defaults
 
@@ -130,9 +130,8 @@ The tool automatically detects these video file extensions:
 
 See [PLAN.md](PLAN.md) for the complete roadmap. Upcoming features include:
 
-- 📁 **Batch processing** - Process multiple files at once
 - 🎛️ **Command-line options** - Override defaults per-transcode
-- 📊 **Enhanced output modes** - Progress indicators, verbose/quiet modes, dry-run
+- 📊 **Enhanced output modes** - Verbose/quiet modes, dry-run (basic progress indicators already exist)
 - ⚙️ **Configuration system** - Customize default bitrates, codecs, and containers
   - Configurable target bitrates per resolution (2160p, 1080p, 720p, 480p)
   - SDR vs HDR bitrate differentiation (separate bitrates for Standard Dynamic Range and High Dynamic Range content)
