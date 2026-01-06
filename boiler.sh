@@ -12,6 +12,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# Flag to track if script was interrupted
+INTERRUPTED=0
+
 # Cleanup function: kill entire process group on exit/interrupt
 # This automatically kills all child processes (including FFmpeg) without tracking PIDs
 # The -- -$$ syntax means "kill process group of $$ (our PID)"
@@ -24,8 +27,19 @@ cleanup_on_exit() {
     fi
 }
 
-# Set up signal handlers to kill process group on exit/interrupt
-trap cleanup_on_exit EXIT INT TERM
+# Signal handler for interrupts (Ctrl+C)
+handle_interrupt() {
+    INTERRUPTED=1
+    error ""
+    error "Interrupted by user (Ctrl+C) - stopping all processing..."
+    cleanup_on_exit
+    # Force immediate exit
+    exit 130  # Standard exit code for SIGINT
+}
+
+# Set up signal handlers
+trap cleanup_on_exit EXIT TERM
+trap handle_interrupt INT
 
 # Function to print colored messages (to stderr so they don't interfere with function return values)
 info() {
@@ -568,6 +582,12 @@ find_optimal_quality() {
     info "Using proportional adjustment algorithm (adjusts step size based on distance from target)"
     
     while true; do
+        # Check if interrupted before each iteration
+        if [ "$INTERRUPTED" -eq 1 ]; then
+            error "Optimization interrupted, exiting"
+            exit 130
+        fi
+        
         iteration=$((iteration + 1))
         info "Iteration $iteration: Testing with quality=${test_quality} (higher = higher quality/bitrate)"
         
@@ -577,6 +597,12 @@ find_optimal_quality() {
         local sample_index=0
         
         for sample_start in "$sample_start_1" "$sample_start_2" "$sample_start_3"; do
+            # Check if interrupted before processing each sample
+            if [ "$INTERRUPTED" -eq 1 ]; then
+                error "Optimization interrupted, exiting"
+                exit 130
+            fi
+            
             # Skip empty sample positions (for shorter videos)
             if [ -z "$sample_start" ]; then
                 continue
@@ -1063,6 +1089,12 @@ main() {
     
     # Process each video file
     for video_file in "${video_files[@]}"; do
+        # Check if interrupted before processing next file
+        if [ "$INTERRUPTED" -eq 1 ]; then
+            error "Processing interrupted, exiting"
+            exit 130
+        fi
+        
         current_file=$((current_file + 1))
         info ""
         # Show directory context if file is in a subdirectory
@@ -1075,10 +1107,22 @@ main() {
         info "=========================================="
         
         # Process this file (transcode_video handles its own errors)
+        # Check for interrupt after each file
         transcode_video "$video_file" || {
+            # If interrupted, exit immediately
+            if [ "$INTERRUPTED" -eq 1 ]; then
+                error "Processing interrupted, exiting"
+                exit 130
+            fi
             warn "Failed to process: $video_file"
             # Continue with next file instead of exiting
         }
+        
+        # Check again after processing (in case interrupt happened during transcoding)
+        if [ "$INTERRUPTED" -eq 1 ]; then
+            error "Processing interrupted, exiting"
+            exit 130
+        fi
     done
     
     info ""
