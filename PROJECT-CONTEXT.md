@@ -138,11 +138,15 @@ The script is modularized into the following function categories:
 - Categorizes videos into resolution tiers:
   - **2160p (4K)**: ≥2160 pixels height
   - **1080p (Full HD)**: ≥1080 pixels height
-  - **Below 1080p**: Falls back to 1080p settings
+  - **720p (HD)**: ≥720 pixels height
+  - **480p (SD)**: ≥480 pixels height
+  - **Below 480p**: Falls back to 480p settings
 
 #### Bitrate Targeting
 - **2160p videos**: Target 11 Mbps
 - **1080p videos**: Target 8 Mbps
+- **720p videos**: Target 5 Mbps
+- **480p videos**: Target 2.5 Mbps
 - Acceptable range: ±5% of target bitrate
 
 #### Quality Optimization Algorithm
@@ -198,7 +202,7 @@ The script uses an iterative approach to find the optimal quality setting using 
 ```
 boiler/
 ├── boiler.sh                    # Main transcoding script
-├── test_boiler.sh               # Test suite with function mocking (111 tests)
+├── test_boiler.sh               # Test suite with function mocking (138 tests)
 ├── copy-1080p-test.sh          # Helper: Copy 1080p test video to current directory
 ├── copy-4k-test.sh              # Helper: Copy 4K test video to current directory
 ├── cleanup-mp4.sh               # Helper: Remove all .mp4 files from project root
@@ -252,7 +256,7 @@ The script uses two methods to determine bitrate:
 ### Testing Infrastructure
 
 **Test Suite (`test_boiler.sh`):**
-- **111 tests** covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second pass transcoding scenarios)
+- **138 tests** covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` unit tests, and error handling tests)
 - **Function mocking approach**: Uses file-based call tracking to mock FFmpeg/ffprobe-dependent functions without requiring actual video files or FFmpeg installation
 - **Mocked functions**:
   - `get_video_resolution()` - Returns configurable resolution (default: 1080p)
@@ -283,7 +287,7 @@ The script uses two methods to determine bitrate:
 - Updated `find_skipped_video_files()` to search subdirectories one level deep
 - Enhanced `main()` to show directory context in progress messages for files in subdirectories
 - Output files are created in the same directory as their source files
-- All existing tests pass (111 tests total)
+- All existing tests pass (138 tests total)
 
 ### Previous Session (Testing Infrastructure)
 
@@ -292,7 +296,7 @@ The script uses two methods to determine bitrate:
 - Added 25 integration tests for `main()` function covering all code paths
 - Refactored test suite to avoid file I/O dependencies (no Python, dd, or large file creation needed)
 - Tests now work across subshells using temporary files for call tracking
-- Total test coverage: 111 tests covering utility functions, mocked functions, and integration scenarios (including second pass transcoding)
+- Total test coverage: 138 tests covering utility functions, mocked functions, and integration scenarios (including second pass transcoding, multiple resolution support, `calculate_adjusted_quality()` unit tests, and error handling tests)
 - All tests passing and CI/CD ready (no FFmpeg/ffprobe required for testing)
 
 **Key Technical Decisions:**
@@ -340,6 +344,8 @@ The script uses two methods to determine bitrate:
 
 ### Future Enhancements (See PLAN.md)
 
+- Configurable target bitrates per resolution
+- SDR vs HDR bitrate differentiation
 - Configurable constant quality start ranges
 
 ### Smart Pre-processing

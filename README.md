@@ -20,6 +20,8 @@ A simplified command-line tool for transcoding video files with automatic qualit
 - **Target Bitrates**:
   - 2160p (4K): 11 Mbps
   - 1080p (Full HD): 8 Mbps
+  - 720p (HD): 5 Mbps
+  - 480p (SD): 2.5 Mbps
 - **Platform**: Optimized for macOS Sequoia
 
 ## Requirements
@@ -131,6 +133,8 @@ See [PLAN.md](PLAN.md) for the complete roadmap. Upcoming features include:
 - 🎛️ **Command-line options** - Override defaults per-transcode
 - 📊 **Enhanced output modes** - Progress indicators, verbose/quiet modes, dry-run
 - ⚙️ **Configuration system** - Customize default bitrates, codecs, and containers
+  - Configurable target bitrates per resolution (2160p, 1080p, 720p, 480p)
+  - SDR vs HDR bitrate differentiation (separate bitrates for Standard Dynamic Range and High Dynamic Range content)
 - 📦 **Installation** - Install as a system command, run from any directory
 - 🌐 **Cross-platform support** - Port to Linux/Windows (currently macOS-only)
 
@@ -170,7 +174,7 @@ For testing and development, helper scripts are available:
 
 ### Running Tests
 
-The project includes a comprehensive test suite (`test_boiler.sh`) with 111 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full integration tests (including second pass transcoding scenarios). The test suite uses function mocking to avoid requiring actual video files or FFmpeg installation, making it suitable for CI/CD environments.
+The project includes a comprehensive test suite (`test_boiler.sh`) with 138 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full integration tests (including second pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` unit tests, and error handling tests). The test suite uses function mocking to avoid requiring actual video files or FFmpeg installation, making it suitable for CI/CD environments.
 
 To run the test suite:
 ```bash

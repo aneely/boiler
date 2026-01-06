@@ -20,6 +20,8 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Resolution-based target bitrate selection
   - 2160p: 11 Mbps
   - 1080p: 8 Mbps
+  - 720p: 5 Mbps
+  - 480p: 2.5 Mbps
 - [x] Iterative quality optimization algorithm using constant quality mode (`-q:v`)
 - [x] Multi-point sampling (beginning, middle, end) for accurate bitrate prediction
 - [x] HEVC via Apple VideoToolbox (hardware-accelerated on macOS)
@@ -29,7 +31,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Error handling and validation
 - [x] Early exit check: Skip transcoding if source video is already within ±5% of target bitrate
 - [x] Helper scripts for testing (copy test videos, cleanup)
-- [x] Comprehensive test suite with function mocking (111 tests, CI/CD ready)
+- [x] Comprehensive test suite with function mocking (138 tests, CI/CD ready)
 - [x] Second pass transcoding: Automatically performs a second transcoding pass with adjusted quality if the first pass bitrate is outside tolerance range
 
 ### Current Defaults
@@ -43,6 +45,8 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - **Target Bitrates**:
   - 2160p: 11 Mbps
   - 1080p: 8 Mbps
+  - 720p: 5 Mbps
+  - 480p: 2.5 Mbps
 - **Platform**: macOS Sequoia (hardware acceleration unlocked)
 
 ### Helper Scripts
@@ -58,7 +62,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - **Multi-point sampling**: Implemented to address issue where single sample from beginning didn't accurately predict full video bitrate.
 - **No iteration limit**: Removed iteration limit safeguard - loop continues until convergence or quality bounds (0-100) are reached.
 - **Code refactoring**: Consolidated duplicate bitrate measurement logic into generic `measure_bitrate()` function. Extracted tolerance checking into `is_within_tolerance()` helper. Added `sanitize_value()` helper for consistent value sanitization. Renamed `find_optimal_bitrate()` to `find_optimal_quality()` to reflect constant quality mode.
-- **Testing infrastructure**: Implemented comprehensive test suite with function mocking using file-based call tracking. 111 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second pass transcoding scenarios). Tests work without FFmpeg/ffprobe installation, enabling CI/CD workflows. Uses temporary files for call tracking to work around bash subshell limitations.
+- **Testing infrastructure**: Implemented comprehensive test suite with function mocking using file-based call tracking. 138 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` unit tests, and error handling tests). Tests work without FFmpeg/ffprobe installation, enabling CI/CD workflows. Uses temporary files for call tracking to work around bash subshell limitations.
 - **Sample duration**: Sample duration is set to 60 seconds for better bitrate accuracy. Adaptive sampling logic uses fewer samples for shorter videos (1 sample for videos <120s, 2 samples for 120-179s, 3 samples for ≥180s).
 - **FFmpeg process cleanup**: Signal handling implemented to kill process group on interrupt, but may need verification.
 
@@ -88,6 +92,8 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 ### Quality Control and Optimization
 
+- [ ] **Configurable target bitrates**: Allow users to customize target bitrates per resolution (2160p, 1080p, 720p, 480p) via configuration file or command-line options. This would enable users to adjust bitrates based on their specific quality/file size preferences, storage constraints, or use case requirements (e.g., archival vs. distribution).
+- [ ] **SDR vs HDR bitrate differentiation**: Detect video dynamic range (Standard Dynamic Range vs. High Dynamic Range) and apply different target bitrates accordingly. HDR content typically requires higher bitrates (e.g., 6.5 Mbps for 720p HDR vs. 5 Mbps for 720p SDR, 35-45 Mbps for 4K HDR vs. current 11 Mbps for 4K SDR) to maintain quality due to increased color depth and brightness range. This would improve quality for HDR content while keeping file sizes reasonable for SDR content.
 - [ ] **Configurable constant quality start ranges**: Allow users to specify custom starting quality values or ranges for the optimization loop, rather than always starting at a fixed value (currently 52). This would help optimize for different use cases or content types.
 - [ ] **Configurable sample duration**: Make the sample duration configurable. Currently set to 60 seconds per sample. Longer samples provide more accurate bitrate predictions but take longer to process. Could be made user-configurable or further optimized based on video duration/complexity.
 

@@ -368,10 +368,18 @@ calculate_target_bitrate() {
         TARGET_BITRATE_MBPS=8
         TARGET_BITRATE_BPS=$((TARGET_BITRATE_MBPS * 1000000))
         info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps (1080p)"
-    else
-        warn "Resolution ${resolution}p is below 1080p, using 1080p target bitrate (8 Mbps)"
-        TARGET_BITRATE_MBPS=8
+    elif [ "$resolution" -ge 720 ]; then
+        TARGET_BITRATE_MBPS=5
         TARGET_BITRATE_BPS=$((TARGET_BITRATE_MBPS * 1000000))
+        info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps (720p)"
+    elif [ "$resolution" -ge 480 ]; then
+        TARGET_BITRATE_MBPS=2.5
+        TARGET_BITRATE_BPS=$(printf "%.0f" "$(echo "scale=2; $TARGET_BITRATE_MBPS * 1000000" | bc | tr -d '\n\r')" | tr -d '\n\r')
+        info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps (480p)"
+    else
+        warn "Resolution ${resolution}p is below 480p, using 480p target bitrate (2.5 Mbps)"
+        TARGET_BITRATE_MBPS=2.5
+        TARGET_BITRATE_BPS=$(printf "%.0f" "$(echo "scale=2; $TARGET_BITRATE_MBPS * 1000000" | bc | tr -d '\n\r')" | tr -d '\n\r')
     fi
 }
 
