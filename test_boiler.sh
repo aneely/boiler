@@ -194,6 +194,16 @@ measure_bitrate() {
     
     # If this is an output file (temp_transcode), use MOCK_OUTPUT_BITRATE_BPS if set
     if [[ "$file_path" == *"temp_transcode"* ]] && [ -n "${MOCK_OUTPUT_BITRATE_BPS:-}" ]; then
+        # Count how many times we've measured temp_transcode files
+        local temp_transcode_count=$(grep -c "temp_transcode" "$MEASURE_BITRATE_CALLS_FILE" 2>/dev/null || echo "0")
+        
+        # If MOCK_SECOND_PASS_BITRATE_BPS is set and this is the second call, use it
+        if [ "$temp_transcode_count" -eq 2 ] && [ -n "${MOCK_SECOND_PASS_BITRATE_BPS:-}" ]; then
+            echo "${MOCK_SECOND_PASS_BITRATE_BPS}"
+            return
+        fi
+        
+        # Otherwise use MOCK_OUTPUT_BITRATE_BPS (first pass)
         echo "${MOCK_OUTPUT_BITRATE_BPS}"
         return
     fi
@@ -671,6 +681,39 @@ test_main() {
     # Cleanup
     rm -f "$test_file" *.mp4 *.fmpg.*.mp4 2>/dev/null
     unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_SAMPLE_BITRATE_BPS MOCK_OUTPUT_BITRATE_BPS
+    
+    # Test 4: Second pass when first pass is outside tolerance
+    reset_call_tracking
+    test_file="test_video.mp4"
+    touch "$test_file"
+    MOCK_VIDEO_FILE="$test_file"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=12000000  # 12 Mbps (above 8 Mbps target, needs transcoding)
+    MOCK_SAMPLE_BITRATE_BPS=8000000  # Sample bitrate at target (8 Mbps) so optimization converges immediately
+    MOCK_OUTPUT_BITRATE_BPS=9000000  # First pass: 9 Mbps (12.5% above target, outside ±5% tolerance)
+    MOCK_SECOND_PASS_BITRATE_BPS=8100000  # Second pass: 8.1 Mbps (1.25% above target, within tolerance)
+    
+    set +e
+    output=$(main 2>&1)
+    exit_code=$?
+    set -e
+    
+    assert_exit_code $exit_code 0 "main: completes transcoding with second pass"
+    assert_not_empty "$(echo "$output" | grep -i "second pass" || true)" "main: outputs second pass message"
+    assert_not_empty "$(echo "$output" | grep -i "outside tolerance" || true)" "main: outputs outside tolerance warning"
+    # Verify find_video_file was called
+    assert_equal "$(count_calls "$FIND_VIDEO_FILE_CALLS_FILE")" "1" "main: calls find_video_file"
+    # Verify measure_bitrate was called (1 for source + 3 for samples + 2 for output passes = 6)
+    assert_equal "$(count_calls "$MEASURE_BITRATE_CALLS_FILE")" "6" "main: calls measure_bitrate (source + samples + 2 output passes)"
+    # Verify transcode_sample was called (for finding optimal quality - 3 samples for 300s video)
+    assert_equal "$(count_calls "$TRANSCODE_SAMPLE_CALLS_FILE")" "3" "main: calls transcode_sample for optimization (3 samples for 300s video)"
+    # Verify transcode_full_video was called twice (first pass + second pass)
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "2" "main: calls transcode_full_video twice (first pass + second pass)"
+    
+    # Cleanup
+    rm -f "$test_file" *.mp4 *.fmpg.*.mp4 2>/dev/null
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_SAMPLE_BITRATE_BPS MOCK_OUTPUT_BITRATE_BPS MOCK_SECOND_PASS_BITRATE_BPS
     
     # Return to original directory
     cd - > /dev/null || true
