@@ -56,13 +56,15 @@ brew install bc
    ```
 
 3. The script will:
-   - Find the video file in the current directory
-   - Analyze its resolution and duration
-   - Determine the target bitrate
-   - Check if source video is already within ±5% of target (exits early if so)
-   - Iteratively find the optimal quality setting by sampling from multiple points (if needed)
-   - Transcode the full video
-   - Output: `{base}.fmpg.{actual_bitrate}.Mbps.{ext}` (e.g., `video.fmpg.10.25.Mbps.mp4`)
+   - Find all video files in the current directory and subdirectories (one level deep)
+   - Process each video file found
+   - For each video:
+     - Analyze its resolution and duration
+     - Determine the target bitrate
+     - Check if source video is already within ±5% of target (exits early if so)
+     - Iteratively find the optimal quality setting by sampling from multiple points (if needed)
+     - Transcode the full video
+     - Output: `{base}.fmpg.{actual_bitrate}.Mbps.{ext}` (e.g., `video.fmpg.10.25.Mbps.mp4`)
 
 ### Example Output
 
@@ -87,8 +89,8 @@ brew install bc
 
 The script follows a modular architecture with focused functions for each step:
 
-1. **Discovery**: Finds the first video file in the current directory
-2. **Analysis**: Uses `ffprobe` to determine video resolution and duration
+1. **Discovery**: Finds all video files in the current directory and subdirectories (one level deep)
+2. **Analysis**: Uses `ffprobe` to determine video resolution and duration for each file
 3. **Targeting**: Sets target bitrate based on resolution
 4. **Pre-check**: Checks if source video is already within ±5% of target bitrate (exits early if so)
 5. **Optimization** (if needed): 
@@ -116,8 +118,7 @@ The tool automatically detects these video file extensions:
 ## Limitations
 
 - **macOS-only** - Currently only supports macOS (VideoToolbox hardware acceleration requires macOS)
-- Currently processes one video file per execution
-- Must be run from the directory containing the video file
+- Processes video files in current directory and subdirectories one level deep (not recursive)
 - Uses hardcoded defaults (not yet configurable)
 - Audio is always copied (not re-encoded)
 

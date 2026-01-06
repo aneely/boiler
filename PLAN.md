@@ -15,7 +15,8 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 ### ✅ Implemented Features
 
-- [x] Automatic video file discovery in current directory
+- [x] Automatic video file discovery in current directory and subdirectories (one level deep)
+- [x] Batch processing: Processes all video files found in current directory and subdirectories
 - [x] Resolution-based target bitrate selection
   - 2160p: 11 Mbps
   - 1080p: 8 Mbps
@@ -68,8 +69,8 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 ### Batch Processing
 
-- [ ] **Multiple files in current directory**: Process all video files found in the current directory, not just the first one. This would allow transcoding multiple videos in a single run.
-- [ ] **Subdirectory processing (one level deep)**: Process video files in subdirectories one level deep from the current directory. This would enable batch processing of organized video collections.
+- [x] **Multiple files in current directory**: Process all video files found in the current directory, not just the first one. This allows transcoding multiple videos in a single run. (Implemented)
+- [x] **Subdirectory processing (one level deep)**: Process video files in subdirectories one level deep from the current directory. This enables batch processing of organized video collections. (Implemented)
 
 ### File Detection and Naming
 

@@ -118,13 +118,22 @@ has_original_file() {
     return 1  # Original does not exist
 }
 
-# Check if a potential original file has an encoded version in the current directory
+# Check if a potential original file has an encoded version in the same directory
 # Arguments: potential_original_filename
 # Returns: 0 (true) if encoded version exists, 1 (false) if not
 has_encoded_version() {
     local original_file="$1"
     local basename=$(basename "$original_file")
     local dirname=$(dirname "$original_file")
+    
+    # Normalize directory: use "." for current directory, otherwise use the directory path
+    if [ "$dirname" = "." ]; then
+        local search_dir="."
+        local maxdepth=1
+    else
+        local search_dir="$dirname"
+        local maxdepth=1
+    fi
     
     # Extract base name and extension
     local base_part="${basename%.*}"
@@ -138,7 +147,7 @@ has_encoded_version() {
         # Use find to look for files matching: {base}.{marker}.*.{ext}
         # We'll check if any file starts with the base and marker pattern
         local pattern="${base_part}.${marker}."
-        local found=$(find . -maxdepth 1 -type f -iname "${pattern}*.${ext_part}" 2>/dev/null | head -1)
+        local found=$(find "$search_dir" -maxdepth "$maxdepth" -type f -iname "${pattern}*.${ext_part}" 2>/dev/null | head -1)
         if [ -n "$found" ]; then
             return 0  # Found encoded version
         fi
@@ -169,7 +178,7 @@ should_skip_file() {
     return 1  # Should process
 }
 
-# Find all video files in current directory (excluding skipped files)
+# Find all video files in current directory and subdirectories (one level deep, excluding skipped files)
 # Returns all matching video files, one per line
 find_all_video_files() {
     local video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv")
@@ -183,7 +192,7 @@ find_all_video_files() {
                     video_files+=("$found")
                 fi
             fi
-        done < <(find . -maxdepth 1 -type f -iname "*.${ext}" 2>/dev/null)
+        done < <(find . -maxdepth 2 -type f -iname "*.${ext}" 2>/dev/null)
     done
 
     # Print each file on a separate line
@@ -193,7 +202,7 @@ find_all_video_files() {
 }
 
 # Find all skipped video files (files with .hbrk., .fmpg., or .orig. markers)
-# Returns all skipped video files, one per line
+# Returns all skipped video files, one per line (includes current directory and subdirectories one level deep)
 find_skipped_video_files() {
     local video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv")
     local skipped_files=()
@@ -206,7 +215,7 @@ find_skipped_video_files() {
                     skipped_files+=("$found")
                 fi
             fi
-        done < <(find . -maxdepth 1 -type f -iname "*.${ext}" 2>/dev/null)
+        done < <(find . -maxdepth 2 -type f -iname "*.${ext}" 2>/dev/null)
     done
 
     # Print each file on a separate line
@@ -813,6 +822,17 @@ transcode_video() {
             info "Source video bitrate: ${SOURCE_BITRATE_MBPS} Mbps"
             info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps (acceptable range: ±5%)"
             info "Source video is already within acceptable range (5% of target). No transcoding needed."
+            
+            # Rename file to include actual bitrate: {base}.orig.{bitrate}.Mbps.{ext}
+            parse_filename "$VIDEO_FILE"
+            local renamed_file="${BASE_NAME}.orig.${SOURCE_BITRATE_MBPS}.Mbps.${FILE_EXTENSION}"
+            
+            # Only rename if the filename would be different
+            if [ "$VIDEO_FILE" != "$renamed_file" ]; then
+                mv "$VIDEO_FILE" "$renamed_file"
+                info "Renamed file to: $renamed_file"
+            fi
+            
             return 0
         fi
         
@@ -951,7 +971,13 @@ main() {
     for video_file in "${video_files[@]}"; do
         current_file=$((current_file + 1))
         info ""
-        info "Processing file ${current_file}/${total_files}: $(basename "$video_file")"
+        # Show directory context if file is in a subdirectory
+        local file_dir=$(dirname "$video_file")
+        if [ "$file_dir" != "." ]; then
+            info "Processing file ${current_file}/${total_files}: $video_file"
+        else
+            info "Processing file ${current_file}/${total_files}: $(basename "$video_file")"
+        fi
         info "=========================================="
         
         # Process this file (transcode_video handles its own errors)

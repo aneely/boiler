@@ -77,12 +77,13 @@ The goal is to ensure that a new session can pick up exactly where the previous 
 
 The tool is implemented as a modular bash script (`boiler.sh`) organized into focused functions:
 
-1. **Discovers video files** in the current working directory
-2. **Analyzes video properties** (resolution, duration) using `ffprobe`
-3. **Determines target bitrate** based on resolution
-4. **Checks if source is already optimized** - Short-circuits if source video is already within ±5% of target bitrate
-5. **Iteratively finds optimal quality setting** using constant quality mode (`-q:v`) by transcoding samples from multiple points and adjusting quality to hit target bitrate
-6. **Transcodes the full video** using the optimal quality setting
+1. **Discovers video files** in the current working directory and subdirectories (one level deep)
+2. **Processes each video file** found (batch processing)
+3. **Analyzes video properties** (resolution, duration) using `ffprobe` for each file
+4. **Determines target bitrate** based on resolution
+5. **Checks if source is already optimized** - Short-circuits if source video is already within ±5% of target bitrate
+6. **Iteratively finds optimal quality setting** using constant quality mode (`-q:v`) by transcoding samples from multiple points and adjusting quality to hit target bitrate
+7. **Transcodes the full video** using the optimal quality setting
 
 #### Code Organization
 
@@ -90,7 +91,8 @@ The script is modularized into the following function categories:
 
 **Utility Functions:**
 - `check_requirements()` - Validates that ffmpeg, ffprobe, and bc are installed
-- `find_video_file()` - Discovers video files in the current directory
+- `find_all_video_files()` - Discovers all video files in current directory and subdirectories (one level deep), excluding already-encoded files
+- `find_video_file()` - Discovers first video file in current directory (for backward compatibility)
 - `get_video_resolution()` - Extracts video resolution using ffprobe
 - `get_video_duration()` - Extracts video duration using ffprobe
 - `sanitize_value()` - Sanitizes values for bc calculations (removes newlines, carriage returns, trims whitespace)
@@ -124,9 +126,10 @@ The script is modularized into the following function categories:
 ### Core Components
 
 #### Video Discovery
-- Searches current directory for common video formats: `mp4`, `mkv`, `avi`, `mov`, `m4v`, `webm`, `flv`, `wmv`
-- Selects the first matching file found
-- Requires exactly one video file in the directory
+- Searches current directory and subdirectories (one level deep) for common video formats: `mp4`, `mkv`, `avi`, `mov`, `m4v`, `webm`, `flv`, `wmv`
+- Processes all matching video files found (batch processing)
+- Skips files that are already encoded (contain `.fmpg.`, `.orig.`, or `.hbrk.` markers) or have encoded versions in the same directory
+- Output files are created in the same directory as their source files
 
 #### Resolution Detection
 - Uses `ffprobe` to extract video stream height
@@ -268,7 +271,17 @@ The script uses two methods to determine bitrate:
 
 ## Current Session Status
 
-### Latest Session (Testing Infrastructure)
+### Latest Session (Subdirectory Processing)
+
+**Batch Processing with Subdirectory Support:**
+- Modified `find_all_video_files()` to search subdirectories one level deep (`find . -maxdepth 2`)
+- Updated `has_encoded_version()` to check for encoded versions in the same directory as the source file (not just current directory)
+- Updated `find_skipped_video_files()` to search subdirectories one level deep
+- Enhanced `main()` to show directory context in progress messages for files in subdirectories
+- Output files are created in the same directory as their source files
+- All existing tests pass (109 tests total)
+
+### Previous Session (Testing Infrastructure)
 
 **Function Mocking and Integration Tests:**
 - Implemented file-based call tracking system for mocking FFmpeg/ffprobe functions
@@ -349,12 +362,11 @@ The script uses two methods to determine bitrate:
 ## Current Limitations
 
 1. **macOS-only**: Currently only supports macOS (VideoToolbox hardware acceleration requires macOS)
-2. **Single file processing**: Only processes one video per execution
-3. **Directory constraint**: Must be run from directory containing video file
-4. **Hardcoded defaults**: Bitrates, codec, and container are fixed
-5. **No configuration**: No user-configurable settings
-6. **No installation**: Script must be run directly, not installed as system command
-7. **Audio handling**: Always copies audio without re-encoding options
+2. **Subdirectory depth**: Only processes subdirectories one level deep (not recursive)
+3. **Hardcoded defaults**: Bitrates, codec, and container are fixed
+4. **No configuration**: No user-configurable settings
+5. **No installation**: Script must be run directly, not installed as system command
+6. **Audio handling**: Always copies audio without re-encoding options
 
 ## Future Direction
 

@@ -573,6 +573,19 @@ test_skip_and_find_functions() {
     found_files=$(bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; find_all_video_files")
     assert_equal "$found_files" "" "find_all_video_files: returns empty when no files"
     
+    # Test find_all_video_files: finds files in subdirectories (one level deep)
+    mkdir -p subdir1 subdir2
+    touch subdir1/video1.mp4 subdir1/video2.mp4
+    touch subdir2/video3.mp4
+    touch video4.mp4  # File in current directory
+    touch subdir1/skip.fmpg.mp4  # Should be skipped
+    mkdir -p subdir1/nested
+    touch subdir1/nested/video5.mp4  # Should NOT be found (too deep)
+    
+    found_files=$(bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; find_all_video_files" | sort)
+    local expected="$(echo -e './subdir1/video1.mp4\n./subdir1/video2.mp4\n./subdir2/video3.mp4\n./video4.mp4' | sort)"
+    assert_equal "$found_files" "$expected" "find_all_video_files: finds files in current directory and subdirectories (one level deep)"
+    
     # Cleanup
     cd - > /dev/null || true
     rm -rf "$temp_dir"
@@ -744,8 +757,18 @@ test_main() {
     assert_equal "$(count_calls "$TRANSCODE_SAMPLE_CALLS_FILE")" "0" "main: does not call transcode_sample when within tolerance"
     assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "0" "main: does not call transcode_full_video when within tolerance"
     
+    # Check that file was renamed (files within tolerance should be renamed to show bitrate)
+    local renamed_file="test_video.orig.8.00.Mbps.mp4"
+    if [ -f "$renamed_file" ]; then
+        assert_equal "1" "1" "main: renames file when within tolerance"
+        rm -f "$renamed_file"
+    else
+        # File should have been renamed, fail if it wasn't
+        assert_equal "renamed" "not_renamed" "main: renames file when within tolerance"
+    fi
+    
     # Cleanup
-    rm -f "$test_file"
+    rm -f "$test_file" "$renamed_file"
     unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS
     
     # Test 2: Early exit when source is below target (with file renaming)
