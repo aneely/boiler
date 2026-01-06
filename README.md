@@ -15,7 +15,7 @@ A simplified command-line tool for transcoding video files with automatic qualit
 
 - **Codec**: HEVC (H.265) via `hevc_videotoolbox` (Apple VideoToolbox hardware acceleration)
 - **Container**: MP4
-- **Quality control**: Bitrate mode (VideoToolbox doesn't support CRF)
+- **Quality control**: Constant quality mode (`-q:v`) - Iteratively adjusts quality value (0-100, higher = higher quality/bitrate) to hit target bitrate
 - **Audio**: Copy (no re-encoding)
 - **Target Bitrates**:
   - 2160p (4K): 11 Mbps
@@ -59,10 +59,10 @@ brew install bc
    - Find the video file in the current directory
    - Analyze its resolution and duration
    - Determine the target bitrate
-   - Check if source video is already within ±10% of target (exits early if so)
-   - Iteratively find the optimal bitrate setting by sampling from multiple points (if needed)
+   - Check if source video is already within ±5% of target (exits early if so)
+   - Iteratively find the optimal quality setting by sampling from multiple points (if needed)
    - Transcode the full video
-   - Output: `{original_name}_transcoded.mp4`
+   - Output: `{base}.fmpg.{actual_bitrate}.Mbps.{ext}` (e.g., `video.fmpg.10.25.Mbps.mp4`)
 
 ### Example Output
 
@@ -70,18 +70,17 @@ brew install bc
 [INFO] Found video file: my_video.mp4
 [INFO] Video resolution: 2160p
 [INFO] Target bitrate: 11 Mbps (2160p)
-[INFO] Starting quality adjustment process...
-[INFO] Sampling from 3 points (beginning, middle, end) to find optimal bitrate setting
-[INFO] Iteration 1: Testing with bitrate=11.00 Mbps (11000 kbps)
+[INFO] Using constant quality mode (-q:v), sampling from multiple points to find optimal quality setting
+[INFO] Iteration 1: Testing with quality=52
 [INFO] Average bitrate from 3 samples: 12.5 Mbps
-[INFO] Actual bitrate too high, decreasing bitrate setting from 11000k to 9900k
-[INFO] Iteration 2: Testing with bitrate=9.90 Mbps (9900 kbps)
+[INFO] Actual bitrate too high, decreasing quality from 52 to 48
+[INFO] Iteration 2: Testing with quality=48
 [INFO] Average bitrate from 3 samples: 10.8 Mbps
-[INFO] Bitrate is within acceptable range (10% of target)
-[INFO] Optimal bitrate setting found: 9900 kbps (9.90 Mbps)
-[INFO] Starting full video transcoding...
+[INFO] Bitrate is within acceptable range (5% of target)
+[INFO] Optimal quality setting found: 48 (higher = higher quality/bitrate)
+[INFO] Starting full video transcoding with constant quality mode...
 [INFO] Transcoding complete!
-[INFO] Output file: my_video_transcoded.mp4
+[INFO] Output file: my_video.fmpg.10.80.Mbps.mp4
 ```
 
 ## How It Works
@@ -91,14 +90,14 @@ The script follows a modular architecture with focused functions for each step:
 1. **Discovery**: Finds the first video file in the current directory
 2. **Analysis**: Uses `ffprobe` to determine video resolution and duration
 3. **Targeting**: Sets target bitrate based on resolution
-4. **Pre-check**: Checks if source video is already within ±10% of target bitrate (exits early if so)
+4. **Pre-check**: Checks if source video is already within ±5% of target bitrate (exits early if so)
 5. **Optimization** (if needed): 
-   - Samples from 3 points (beginning ~10%, middle ~50%, end ~90%)
-   - Transcodes 15-second samples at different bitrate settings
-   - Averages bitrates from all 3 samples
-   - Adjusts bitrate setting until actual output matches target (±10% tolerance)
-   - Maximum 10 iterations, exits with error if not converged
-6. **Encoding**: Transcodes the full video using the optimal bitrate setting
+   - Samples from multiple points (beginning ~10%, middle ~50%, end ~90% for videos ≥180s; fewer samples for shorter videos)
+   - Transcodes 60-second samples at different quality settings (using constant quality mode `-q:v`)
+   - Averages bitrates from all samples
+   - Adjusts quality value (0-100) proportionally until actual output matches target (±5% tolerance)
+   - Continues until convergence, oscillation detection, or quality bounds reached
+6. **Encoding**: Transcodes the full video using the optimal quality setting
 
 The script is organized into modular functions for maintainability and clarity. All values are sanitized to prevent calculation errors, and logging output is properly separated from function return values. The codebase has been refactored to eliminate duplication with shared helper functions for bitrate measurement, tolerance checking, and value sanitization.
 
@@ -121,7 +120,6 @@ The tool automatically detects these video file extensions:
 - Must be run from the directory containing the video file
 - Uses hardcoded defaults (not yet configurable)
 - Audio is always copied (not re-encoded)
-- VideoToolbox only supports bitrate mode, not CRF (quality-based encoding)
 
 ## Future Features
 
@@ -154,8 +152,8 @@ ffprobe your_video.mp4
 ### Transcoding takes a long time
 This is normal for high-resolution videos. The script uses hardware acceleration via VideoToolbox, which is significantly faster than software encoding. The optimization phase samples from multiple points, which may take a few minutes, but ensures accurate bitrate targeting.
 
-### "Reached maximum iterations" error
-If the script fails to converge within 10 iterations, it may indicate that the target bitrate is not achievable with the current settings, or there's an issue with the video file. Check that the video file is valid and not corrupted.
+### Optimization takes many iterations
+The script uses an iterative approach to find the optimal quality setting. It continues until convergence (bitrate within ±5% tolerance), oscillation detection, or quality bounds are reached. If optimization seems to be taking too long, the video may have highly variable complexity, or the target bitrate may be difficult to achieve. The script will automatically detect and handle oscillation between quality values.
 
 ### Parse errors or calculation issues
 The script includes value sanitization to prevent calculation errors. If you encounter parse errors, ensure that `bc` is properly installed and that video file metadata is readable. The script automatically cleans values before calculations to handle edge cases.

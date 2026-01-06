@@ -34,8 +34,8 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 - **Codec**: HEVC (H.265) via `hevc_videotoolbox` (hardware-accelerated)
 - **Quality control**: Constant quality mode (`-q:v`) - Iteratively adjusts quality value (0-100, higher = higher quality/bitrate) to hit target bitrate
-- **Starting quality**: 30 (adjustable)
-- **Quality step size**: 2 (adjustable)
+- **Starting quality**: 52
+- **Quality adjustment**: Proportional adjustment algorithm (minimum step: 1, maximum step: 10) based on distance from target
 - **Container**: MP4
 - **Audio**: Copy (passthrough)
 - **Target Bitrates**:
@@ -57,7 +57,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - **No iteration limit**: Removed iteration limit safeguard - loop continues until convergence or quality bounds (0-100) are reached.
 - **Code refactoring**: Consolidated duplicate bitrate measurement logic into generic `measure_bitrate()` function. Extracted tolerance checking into `is_within_tolerance()` helper. Added `sanitize_value()` helper for consistent value sanitization. Renamed `find_optimal_bitrate()` to `find_optimal_quality()` to reflect constant quality mode.
 - **Testing infrastructure**: Implemented comprehensive test suite with function mocking using file-based call tracking. 85 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration. Tests work without FFmpeg/ffprobe installation, enabling CI/CD workflows. Uses temporary files for call tracking to work around bash subshell limitations.
-- **Performance issue with large files**: Sample duration is hardcoded to 15 seconds, causing very long iteration times for large 2160p files. Adaptive sample duration based on file size has been tested and works well, but needs to be implemented.
+- **Sample duration**: Sample duration is set to 60 seconds for better bitrate accuracy. Adaptive sampling logic uses fewer samples for shorter videos (1 sample for videos <120s, 2 samples for 120-179s, 3 samples for ≥180s).
 - **FFmpeg process cleanup**: Signal handling implemented to kill process group on interrupt, but may need verification.
 
 ## Future Enhancements
@@ -86,8 +86,8 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 ### Quality Control and Optimization
 
-- [ ] **Configurable constant quality start ranges**: Allow users to specify custom starting quality values or ranges for the optimization loop, rather than always starting at a fixed value (currently 30). This would help optimize for different use cases or content types.
-- [ ] **Lengthen optimization sample sizes**: Make the sample duration configurable or adaptive. Currently hardcoded to 15 seconds per sample. Longer samples would provide more accurate bitrate predictions but take longer to process. Could be made user-configurable or adaptive based on video duration/complexity.
+- [ ] **Configurable constant quality start ranges**: Allow users to specify custom starting quality values or ranges for the optimization loop, rather than always starting at a fixed value (currently 52). This would help optimize for different use cases or content types.
+- [ ] **Configurable sample duration**: Make the sample duration configurable. Currently set to 60 seconds per sample. Longer samples provide more accurate bitrate predictions but take longer to process. Could be made user-configurable or further optimized based on video duration/complexity.
 
 ### Development Workflow
 
