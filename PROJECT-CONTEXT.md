@@ -77,11 +77,11 @@ The goal is to ensure that a new session can pick up exactly where the previous 
 
 The tool is implemented as a modular bash script (`boiler.sh`) organized into focused functions:
 
-1. **Discovers video files** in the current working directory and subdirectories (one level deep)
-2. **Processes each video file** found (batch processing)
+1. **Discovers video files** in the current working directory and subdirectories (one level deep) using `find_all_video_files()`, skipping already-encoded files
+2. **Processes each video file** found (batch processing) via `main()` which calls `transcode_video()` for each file
 3. **Analyzes video properties** (resolution, duration) using `ffprobe` for each file
 4. **Determines target bitrate** based on resolution
-5. **Checks if source is already optimized** - Short-circuits if source video is already within ±5% of target bitrate
+5. **Checks if source is already optimized** - Short-circuits if source video is already within ±5% of target bitrate or below target (renames file to include bitrate if below target)
 6. **Iteratively finds optimal quality setting** using constant quality mode (`-q:v`) by transcoding samples from multiple points and adjusting quality to hit target bitrate
 7. **Transcodes the full video** using the optimal quality setting
 8. **Performs second pass if needed** - If the first pass bitrate is outside tolerance, automatically performs a second transcoding pass with an adjusted quality value calculated using the same proportional adjustment algorithm
@@ -92,8 +92,14 @@ The script is modularized into the following function categories:
 
 **Utility Functions:**
 - `check_requirements()` - Validates that ffmpeg, ffprobe, and bc are installed
+- `extract_original_filename()` - Extracts original filename from an encoded filename (handles `.fmpg.`, `.orig.`, `.hbrk.` markers)
+- `has_original_file()` - Checks if an encoded file has its original file in the same directory
+- `has_encoded_version()` - Checks if a potential original file has an encoded version in the same directory
+- `should_skip_file()` - Determines if a file should be skipped based on filename markers or original/encoded relationship
 - `find_all_video_files()` - Discovers all video files in current directory and subdirectories (one level deep), excluding already-encoded files
+- `find_skipped_video_files()` - Finds all skipped video files (files with `.hbrk.`, `.fmpg.`, or `.orig.` markers) in current directory and subdirectories (one level deep)
 - `find_video_file()` - Discovers first video file in current directory (for backward compatibility)
+- `is_mkv_file()` - Checks if a file is MKV container format (case-insensitive, bash 3.2 compatible)
 - `get_video_resolution()` - Extracts video resolution using ffprobe
 - `get_video_duration()` - Extracts video duration using ffprobe
 - `sanitize_value()` - Sanitizes values for bc calculations (removes newlines, carriage returns, trims whitespace)
@@ -114,10 +120,12 @@ The script is modularized into the following function categories:
 - `find_optimal_quality()` - Main optimization loop that iteratively finds optimal quality setting by adjusting `-q:v` to hit target bitrate
 - `calculate_adjusted_quality()` - Calculates adjusted quality value based on actual vs target bitrate using proportional adjustment algorithm
 - `transcode_full_video()` - Transcodes the complete video with optimal quality setting
+- `remux_mkv_to_mp4()` - Remuxes MKV files to MP4 with QuickLook compatibility (copies streams without transcoding)
 - `cleanup_samples()` - Removes temporary sample files
 
 **Main Orchestration:**
-- `main()` - Orchestrates all steps in the correct order
+- `transcode_video()` - Orchestrates transcoding workflow for a single video file (analysis, optimization, transcoding, second pass if needed)
+- `main()` - Orchestrates batch processing of all video files found in current directory and subdirectories
 
 **Signal Handling:**
 - `cleanup_on_exit()` - Cleanup function registered with trap to kill process group and remove sample files on exit/interrupt
@@ -130,7 +138,11 @@ The script is modularized into the following function categories:
 #### Video Discovery
 - Searches current directory and subdirectories (one level deep) for common video formats: `mp4`, `mkv`, `avi`, `mov`, `m4v`, `webm`, `flv`, `wmv`
 - Processes all matching video files found (batch processing)
-- Skips files that are already encoded (contain `.fmpg.`, `.orig.`, or `.hbrk.` markers) or have encoded versions in the same directory
+- **File skipping logic**: Uses `should_skip_file()` to determine which files to process:
+  - Skips files that contain encoding markers (`.fmpg.`, `.orig.`, or `.hbrk.`) in their filename
+  - Skips original files if an encoded version exists in the same directory (checked via `has_encoded_version()`)
+  - Uses `extract_original_filename()` to reverse-engineer original filenames from encoded filenames
+  - `find_all_video_files()` discovers processable files, while `find_skipped_video_files()` identifies skipped files for user feedback
 - Output files are created in the same directory as their source files
 
 #### Resolution Detection
@@ -354,6 +366,7 @@ The script uses two methods to determine bitrate:
 - `get_source_bitrate()` function measures source video bitrate using the same approach as sample measurement (ffprobe first, file size fallback)
 - Handles both cases: videos already at target (within tolerance) and videos already more compressed than target (below target bitrate)
 - **Automatic renaming for files below target**: When a source file is below target bitrate, it is automatically renamed to include its actual bitrate using the format `{base}.orig.{bitrate}.Mbps.{ext}` (e.g., `video.orig.2.90.Mbps.mp4`). This provides consistent filename formatting even for files that don't need transcoding.
+- **MKV remuxing for optimized files**: For MKV files that are already within tolerance or below target, the script automatically remuxes them to MP4 with QuickLook compatibility (`-movflags +faststart` and `-tag:v hvc1` for HEVC). This converts the container format without transcoding video/audio streams, improving macOS Finder QuickLook compatibility while preserving quality.
 
 ### Modularization
 - Refactored script into focused functions for better maintainability

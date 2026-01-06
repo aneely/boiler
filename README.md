@@ -9,7 +9,7 @@ A simplified command-line tool for transcoding video files with automatic qualit
 - 🚀 **Hardware acceleration** - Uses Apple VideoToolbox for fast encoding on macOS
 - 📊 **Progress feedback** - Color-coded output with clear status messages
 - ⚡ **Fast iteration** - Uses multi-point sampling (3 samples per iteration) to quickly find optimal settings
-- ✨ **Smart pre-processing** - Automatically skips transcoding if source video is already within target bitrate tolerance
+- ✨ **Smart pre-processing** - Automatically skips transcoding if source video is already within target bitrate tolerance, and skips already-encoded files automatically
 
 ## Current Defaults
 
@@ -59,6 +59,7 @@ brew install bc
 
 3. The script will:
    - Find all video files in the current directory and subdirectories (one level deep)
+   - Automatically skip files that are already encoded (contain `.fmpg.`, `.orig.`, or `.hbrk.` markers) or have encoded versions in the same directory
    - Process each video file found
    - For each video:
      - Analyze its resolution and duration
@@ -91,7 +92,7 @@ brew install bc
 
 The script follows a modular architecture with focused functions for each step:
 
-1. **Discovery**: Finds all video files in the current directory and subdirectories (one level deep)
+1. **Discovery**: Finds all video files in the current directory and subdirectories (one level deep), automatically skipping files that are already encoded (contain `.fmpg.`, `.orig.`, or `.hbrk.` markers) or have encoded versions in the same directory
 2. **Analysis**: Uses `ffprobe` to determine video resolution and duration for each file
 3. **Targeting**: Sets target bitrate based on resolution
 4. **Pre-check**: Checks if source video is already within ±5% of target bitrate (exits early if so)

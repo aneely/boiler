@@ -310,6 +310,49 @@ parse_filename() {
     FILE_EXTENSION="${filename##*.}"
 }
 
+# Check if file is MKV container format
+# Arguments: filename
+# Returns: 0 if MKV, 1 otherwise
+is_mkv_file() {
+    local filename="$1"
+    local ext="${filename##*.}"
+    # Convert to lowercase for comparison (bash 3.2 compatible)
+    local ext_lower=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
+    if [ "$ext_lower" = "mkv" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Remux MKV file to MP4 with QuickLook compatibility
+# Copies video and audio streams without transcoding
+# Arguments: input_file, output_file
+remux_mkv_to_mp4() {
+    local input_file="$1"
+    local output_file="$2"
+    
+    # Detect video codec to determine if we need HEVC tag
+    local video_codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$input_file" 2>/dev/null | head -1 | tr -d '\n\r')
+    
+    # Build ffmpeg command: copy all streams, add QuickLook compatibility flags
+    # Start with base command
+    local ffmpeg_args=(-i "$input_file" -c:v copy -c:a copy -movflags +faststart)
+    
+    # Add HEVC tag if video codec is HEVC/H.265 for QuickLook compatibility
+    # Convert to lowercase for comparison (bash 3.2 compatible)
+    local codec_lower=$(echo "$video_codec" | tr '[:upper:]' '[:lower:]')
+    if [ "$codec_lower" = "hevc" ] || [ "$codec_lower" = "h265" ]; then
+        ffmpeg_args+=(-tag:v hvc1)
+    fi
+    
+    # Add output format and file
+    ffmpeg_args+=(-f mp4 "$output_file")
+    
+    # Execute ffmpeg command
+    ffmpeg "${ffmpeg_args[@]}" -loglevel info -stats
+}
+
 # Measure bitrate from a video file
 # Arguments: file_path, duration_seconds
 # Returns: bitrate in bits per second, or empty string if unavailable
@@ -831,14 +874,35 @@ transcode_video() {
             info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps (acceptable range: ±5%)"
             info "Source video is already within acceptable range (5% of target). No transcoding needed."
             
-            # Rename file to include actual bitrate: {base}.orig.{bitrate}.Mbps.{ext}
             parse_filename "$VIDEO_FILE"
-            local renamed_file="${BASE_NAME}.orig.${SOURCE_BITRATE_MBPS}.Mbps.${FILE_EXTENSION}"
             
-            # Only rename if the filename would be different
-            if [ "$VIDEO_FILE" != "$renamed_file" ]; then
-                mv "$VIDEO_FILE" "$renamed_file"
-                info "Renamed file to: $renamed_file"
+            # Check if file is MKV and needs remuxing to MP4 (bash 3.2 compatible)
+            local ext_lower=$(echo "$FILE_EXTENSION" | tr '[:upper:]' '[:lower:]')
+            if [ "$ext_lower" = "mkv" ]; then
+                info "File is MKV format. Remuxing to MP4 with QuickLook compatibility (copying streams, no transcoding)..."
+                
+                # Generate MP4 output filename: {base}.orig.{bitrate}.Mbps.mp4
+                local output_file="${BASE_NAME}.orig.${SOURCE_BITRATE_MBPS}.Mbps.mp4"
+                
+                # Remux MKV to MP4
+                if remux_mkv_to_mp4 "$VIDEO_FILE" "$output_file"; then
+                    # Remove original MKV file only if remux succeeded
+                    rm -f "$VIDEO_FILE"
+                    info "Remuxed file to: $output_file"
+                else
+                    error "Failed to remux MKV file. Original file preserved."
+                    rm -f "$output_file"  # Clean up partial output
+                    return 1
+                fi
+            else
+                # Rename file to include actual bitrate: {base}.orig.{bitrate}.Mbps.{ext}
+                local renamed_file="${BASE_NAME}.orig.${SOURCE_BITRATE_MBPS}.Mbps.${FILE_EXTENSION}"
+                
+                # Only rename if the filename would be different
+                if [ "$VIDEO_FILE" != "$renamed_file" ]; then
+                    mv "$VIDEO_FILE" "$renamed_file"
+                    info "Renamed file to: $renamed_file"
+                fi
             fi
             
             return 0
@@ -850,14 +914,36 @@ transcode_video() {
             info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps"
             info "Source video is already below target bitrate. No transcoding needed."
             
-            # Rename file to include actual bitrate: {base}.orig.{bitrate}.Mbps.{ext}
             parse_filename "$VIDEO_FILE"
-            local renamed_file="${BASE_NAME}.orig.${SOURCE_BITRATE_MBPS}.Mbps.${FILE_EXTENSION}"
             
-            # Only rename if the filename would be different
-            if [ "$VIDEO_FILE" != "$renamed_file" ]; then
-                mv "$VIDEO_FILE" "$renamed_file"
-                info "Renamed file to: $renamed_file"
+            # Check if file is MKV and needs remuxing to MP4
+            # Use FILE_EXTENSION from parse_filename for more reliable detection (bash 3.2 compatible)
+            local ext_lower=$(echo "$FILE_EXTENSION" | tr '[:upper:]' '[:lower:]')
+            if [ "$ext_lower" = "mkv" ]; then
+                info "File is MKV format. Remuxing to MP4 with QuickLook compatibility (copying streams, no transcoding)..."
+                
+                # Generate MP4 output filename: {base}.orig.{bitrate}.Mbps.mp4
+                local output_file="${BASE_NAME}.orig.${SOURCE_BITRATE_MBPS}.Mbps.mp4"
+                
+                # Remux MKV to MP4
+                if remux_mkv_to_mp4 "$VIDEO_FILE" "$output_file"; then
+                    # Remove original MKV file only if remux succeeded
+                    rm -f "$VIDEO_FILE"
+                    info "Remuxed file to: $output_file"
+                else
+                    error "Failed to remux MKV file. Original file preserved."
+                    rm -f "$output_file"  # Clean up partial output
+                    return 1
+                fi
+            else
+                # Rename file to include actual bitrate: {base}.orig.{bitrate}.Mbps.{ext}
+                local renamed_file="${BASE_NAME}.orig.${SOURCE_BITRATE_MBPS}.Mbps.${FILE_EXTENSION}"
+                
+                # Only rename if the filename would be different
+                if [ "$VIDEO_FILE" != "$renamed_file" ]; then
+                    mv "$VIDEO_FILE" "$renamed_file"
+                    info "Renamed file to: $renamed_file"
+                fi
             fi
             
             return 0

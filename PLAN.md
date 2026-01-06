@@ -16,6 +16,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 ### ✅ Implemented Features
 
 - [x] Automatic video file discovery in current directory and subdirectories (one level deep)
+- [x] Smart file skipping: Automatically skips files that are already encoded (contain `.fmpg.`, `.orig.`, or `.hbrk.` markers) or have encoded versions in the same directory
 - [x] Batch processing: Processes all video files found in current directory and subdirectories
 - [x] Resolution-based target bitrate selection
   - 2160p: 11 Mbps
@@ -30,6 +31,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Color-coded output messages
 - [x] Error handling and validation
 - [x] Early exit check: Skip transcoding if source video is already within ±5% of target bitrate
+- [x] MKV remuxing: Automatically remuxes MKV files that are within tolerance or below target to MP4 with QuickLook compatibility (copies streams without transcoding)
 - [x] Helper scripts for testing (copy test videos, cleanup)
 - [x] Comprehensive test suite with function mocking (138 tests, CI/CD ready)
 - [x] Second pass transcoding: Automatically performs a second transcoding pass with adjusted quality if the first pass bitrate is outside tolerance range
@@ -71,6 +73,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 ### Smart Pre-processing
 
 - [x] **Skip already optimized files**: Exit early if the source file is already within ±5% of the target bitrate for its resolution. This prevents unnecessary transcoding when the file is already optimized. (Implemented)
+- [x] **MKV remuxing for optimized files**: For MKV files that are already within tolerance or below target bitrate, automatically remux them to MP4 with QuickLook compatibility. This converts the container format without transcoding video/audio streams, improving macOS Finder QuickLook compatibility while preserving quality. Uses `-movflags +faststart` and `-tag:v hvc1` (for HEVC) for optimal QuickLook support. (Implemented)
 
 ### Batch Processing
 
@@ -79,12 +82,12 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 ### File Detection and Naming
 
-- [ ] **Detect already transcoded files**: Add logic to detect files that have already been transcoded based on the file naming convention. This would prevent re-transcoding files that have already been processed.
-- [ ] **Programmatic file naming convention**: Establish and implement a consistent, programmatically detectable naming convention for transcoded files. This convention should:
-  - Be easily identifiable as a transcoded file
-  - Allow detection of the original source file
-  - Support the detection feature above
-  - Be consistent and predictable for automation
+- [x] **Detect already transcoded files**: Logic implemented to detect files that have already been transcoded based on the file naming convention (`.fmpg.`, `.orig.`, `.hbrk.` markers). This prevents re-transcoding files that have already been processed. Uses `should_skip_file()`, `has_encoded_version()`, and `extract_original_filename()` functions. (Implemented)
+- [x] **Programmatic file naming convention**: Established and implemented a consistent, programmatically detectable naming convention for transcoded files:
+  - Easily identifiable as a transcoded file (via markers)
+  - Allows detection of the original source file (via `extract_original_filename()`)
+  - Supports the detection feature above
+  - Consistent and predictable for automation (Implemented)
 - [x] **Rename files to include bitrate information**: Files are now renamed to include their actual bitrate in the filename:
   - **Transcoded files**: `{base}.fmpg.{actual_bitrate}.Mbps.{ext}` (e.g., `video.fmpg.10.25.Mbps.mp4`)
   - **Files below target**: `{base}.orig.{actual_bitrate}.Mbps.{ext}` (e.g., `video.orig.2.90.Mbps.mp4`)
