@@ -100,6 +100,7 @@ The script follows a modular architecture with focused functions for each step:
    - Adjusts quality value (0-100) proportionally until actual output matches target (±5% tolerance)
    - Continues until convergence, oscillation detection, or quality bounds reached
 6. **Encoding**: Transcodes the full video using the optimal quality setting
+7. **Second pass** (if needed): If the first pass bitrate is outside tolerance, automatically performs a second transcoding pass with an adjusted quality value to get closer to the target bitrate
 
 The script is organized into modular functions for maintainability and clarity. All values are sanitized to prevent calculation errors, and logging output is properly separated from function return values. The codebase has been refactored to eliminate duplication with shared helper functions for bitrate measurement, tolerance checking, and value sanitization.
 
@@ -169,7 +170,7 @@ For testing and development, helper scripts are available:
 
 ### Running Tests
 
-The project includes a comprehensive test suite (`test_boiler.sh`) with 85 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full integration tests. The test suite uses function mocking to avoid requiring actual video files or FFmpeg installation, making it suitable for CI/CD environments.
+The project includes a comprehensive test suite (`test_boiler.sh`) with 111 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full integration tests (including second pass transcoding scenarios). The test suite uses function mocking to avoid requiring actual video files or FFmpeg installation, making it suitable for CI/CD environments.
 
 To run the test suite:
 ```bash

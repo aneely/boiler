@@ -29,7 +29,8 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Error handling and validation
 - [x] Early exit check: Skip transcoding if source video is already within ±5% of target bitrate
 - [x] Helper scripts for testing (copy test videos, cleanup)
-- [x] Comprehensive test suite with function mocking (85 tests, CI/CD ready)
+- [x] Comprehensive test suite with function mocking (111 tests, CI/CD ready)
+- [x] Second pass transcoding: Automatically performs a second transcoding pass with adjusted quality if the first pass bitrate is outside tolerance range
 
 ### Current Defaults
 
@@ -57,7 +58,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - **Multi-point sampling**: Implemented to address issue where single sample from beginning didn't accurately predict full video bitrate.
 - **No iteration limit**: Removed iteration limit safeguard - loop continues until convergence or quality bounds (0-100) are reached.
 - **Code refactoring**: Consolidated duplicate bitrate measurement logic into generic `measure_bitrate()` function. Extracted tolerance checking into `is_within_tolerance()` helper. Added `sanitize_value()` helper for consistent value sanitization. Renamed `find_optimal_bitrate()` to `find_optimal_quality()` to reflect constant quality mode.
-- **Testing infrastructure**: Implemented comprehensive test suite with function mocking using file-based call tracking. 85 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration. Tests work without FFmpeg/ffprobe installation, enabling CI/CD workflows. Uses temporary files for call tracking to work around bash subshell limitations.
+- **Testing infrastructure**: Implemented comprehensive test suite with function mocking using file-based call tracking. 111 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second pass transcoding scenarios). Tests work without FFmpeg/ffprobe installation, enabling CI/CD workflows. Uses temporary files for call tracking to work around bash subshell limitations.
 - **Sample duration**: Sample duration is set to 60 seconds for better bitrate accuracy. Adaptive sampling logic uses fewer samples for shorter videos (1 sample for videos <120s, 2 samples for 120-179s, 3 samples for ≥180s).
 - **FFmpeg process cleanup**: Signal handling implemented to kill process group on interrupt, but may need verification.
 

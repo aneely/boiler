@@ -33,7 +33,7 @@ This ensures the user maintains control over the development direction and can m
 **Before committing ANY changes, you MUST:**
 1. **Run the test suite**: Execute `bash test_boiler.sh` and verify it completes successfully
 2. **Verify exit code**: The test suite MUST exit with code 0 (all tests passing)
-3. **Check test output**: Review the test summary to confirm all tests passed (e.g., "Passed: 85, Failed: 0")
+3. **Check test output**: Review the test summary to confirm all tests passed (e.g., "Passed: 111, Failed: 0")
 4. **Fix any failures**: If ANY tests fail, you MUST fix the issues before committing
 5. **NEVER commit without running tests**: Do not skip this step, even for minor changes
 
@@ -84,6 +84,7 @@ The tool is implemented as a modular bash script (`boiler.sh`) organized into fo
 5. **Checks if source is already optimized** - Short-circuits if source video is already within ±5% of target bitrate
 6. **Iteratively finds optimal quality setting** using constant quality mode (`-q:v`) by transcoding samples from multiple points and adjusting quality to hit target bitrate
 7. **Transcodes the full video** using the optimal quality setting
+8. **Performs second pass if needed** - If the first pass bitrate is outside tolerance, automatically performs a second transcoding pass with an adjusted quality value calculated using the same proportional adjustment algorithm
 
 #### Code Organization
 
@@ -111,6 +112,7 @@ The script is modularized into the following function categories:
 - `transcode_sample()` - Transcodes a single sample from a specific point using constant quality mode (`-q:v`)
 - `measure_sample_bitrate()` - Measures actual bitrate from a sample file (wrapper around `measure_bitrate()`)
 - `find_optimal_quality()` - Main optimization loop that iteratively finds optimal quality setting by adjusting `-q:v` to hit target bitrate
+- `calculate_adjusted_quality()` - Calculates adjusted quality value based on actual vs target bitrate using proportional adjustment algorithm
 - `transcode_full_video()` - Transcodes the complete video with optimal quality setting
 - `cleanup_samples()` - Removes temporary sample files
 
@@ -167,6 +169,7 @@ The script uses an iterative approach to find the optimal quality setting using 
 6. **Convergence**: Stops when actual bitrate is within ±5% of target
 7. **Oscillation detection**: Detects when the algorithm is cycling between quality values (e.g., 60 ↔ 61 ↔ 62) and breaks the loop by selecting the quality value that produces bitrate closest to target. Handles both 2-value oscillations and 3-value cycles.
 8. **No iteration limit**: Loop continues indefinitely until convergence, oscillation detection, or quality bounds are reached
+9. **Second pass transcoding**: After the full video is transcoded with the optimal quality setting, if the resulting bitrate is outside the ±5% tolerance range, automatically performs a second transcoding pass. The second pass uses `calculate_adjusted_quality()` to compute an adjusted quality value based on the actual bitrate from the first pass, using the same proportional adjustment algorithm. This ensures the final output gets as close to the target bitrate as possible, even if sample-based optimization didn't perfectly predict the full video bitrate.
 
 #### Encoding Settings
 
@@ -182,6 +185,7 @@ The script uses an iterative approach to find the optimal quality setting using 
     - Files already below target bitrate are renamed to include their actual bitrate without transcoding
 - **Platform**: Optimized for macOS Sequoia (hardware acceleration unlocked)
 - **QuickLook compatibility**: Uses `-movflags +faststart` for sample transcoding; both `-movflags +faststart` and `-tag:v hvc1` for final output to ensure macOS Finder QuickLook support
+- **Second pass transcoding**: If the first full video transcoding produces a bitrate outside the ±5% tolerance range, automatically performs a second transcoding pass with an adjusted quality value calculated using the same proportional adjustment algorithm. This ensures the final output is as close to the target bitrate as possible.
 
 ### Dependencies
 
@@ -194,7 +198,7 @@ The script uses an iterative approach to find the optimal quality setting using 
 ```
 boiler/
 ├── boiler.sh                    # Main transcoding script
-├── test_boiler.sh               # Test suite with function mocking (85 tests)
+├── test_boiler.sh               # Test suite with function mocking (111 tests)
 ├── copy-1080p-test.sh          # Helper: Copy 1080p test video to current directory
 ├── copy-4k-test.sh              # Helper: Copy 4K test video to current directory
 ├── cleanup-mp4.sh               # Helper: Remove all .mp4 files from project root
@@ -248,7 +252,7 @@ The script uses two methods to determine bitrate:
 ### Testing Infrastructure
 
 **Test Suite (`test_boiler.sh`):**
-- **85 tests** covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration
+- **111 tests** covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second pass transcoding scenarios)
 - **Function mocking approach**: Uses file-based call tracking to mock FFmpeg/ffprobe-dependent functions without requiring actual video files or FFmpeg installation
 - **Mocked functions**:
   - `get_video_resolution()` - Returns configurable resolution (default: 1080p)
@@ -279,7 +283,7 @@ The script uses two methods to determine bitrate:
 - Updated `find_skipped_video_files()` to search subdirectories one level deep
 - Enhanced `main()` to show directory context in progress messages for files in subdirectories
 - Output files are created in the same directory as their source files
-- All existing tests pass (109 tests total)
+- All existing tests pass (111 tests total)
 
 ### Previous Session (Testing Infrastructure)
 
@@ -288,7 +292,7 @@ The script uses two methods to determine bitrate:
 - Added 25 integration tests for `main()` function covering all code paths
 - Refactored test suite to avoid file I/O dependencies (no Python, dd, or large file creation needed)
 - Tests now work across subshells using temporary files for call tracking
-- Total test coverage: 85 tests (52 utility + 8 mock + 25 integration)
+- Total test coverage: 111 tests covering utility functions, mocked functions, and integration scenarios (including second pass transcoding)
 - All tests passing and CI/CD ready (no FFmpeg/ffprobe required for testing)
 
 **Key Technical Decisions:**
