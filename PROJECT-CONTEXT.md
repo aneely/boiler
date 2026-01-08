@@ -120,12 +120,17 @@ The script is modularized into the following function categories:
 - `find_optimal_quality()` - Main optimization loop that iteratively finds optimal quality setting by adjusting `-q:v` to hit target bitrate
 - `calculate_adjusted_quality()` - Calculates adjusted quality value based on actual vs target bitrate using proportional adjustment algorithm
 - `transcode_full_video()` - Transcodes the complete video with optimal quality setting
-- `remux_mkv_to_mp4()` - Remuxes MKV files to MP4 with QuickLook compatibility (copies streams without transcoding)
+- `remux_to_mp4()` - Remuxes non-QuickLook compatible video files to MP4 with QuickLook compatibility (copies streams without transcoding, checks codec compatibility first)
+- `remux_mkv_to_mp4()` - Backward compatibility alias for `remux_to_mp4()`
 - `cleanup_samples()` - Removes temporary sample files
 
+**Preprocessing Functions:**
+- `preprocess_non_quicklook_files()` - Preprocessing pass that remuxes non-QuickLook compatible files (mkv, wmv, avi, webm, flv) that are within tolerance or below target, including `.orig.` files. Runs before main file discovery to catch files that should be remuxed before skip checks.
+
 **Main Orchestration:**
+- `preprocess_non_quicklook_files()` - Preprocessing pass that remuxes eligible non-QuickLook files before main processing
 - `transcode_video()` - Orchestrates transcoding workflow for a single video file (analysis, optimization, transcoding, second pass if needed)
-- `main()` - Orchestrates batch processing of all video files found in current directory and subdirectories
+- `main()` - Orchestrates batch processing: first runs preprocessing, then processes all video files found in current directory and subdirectories
 
 **Signal Handling:**
 - `cleanup_on_exit()` - Cleanup function registered with trap to kill process group and remove sample files on exit/interrupt
@@ -291,7 +296,26 @@ The script uses two methods to determine bitrate:
 
 ## Current Session Status
 
-### Latest Session (Subdirectory Processing)
+### Latest Session (Preprocessing and Codec Compatibility)
+
+**Preprocessing Pass for Non-QuickLook Formats:**
+- Added `preprocess_non_quicklook_files()` function that runs before main file discovery
+- Finds and remuxes non-QuickLook compatible files (mkv, wmv, avi, webm, flv) that are within tolerance or below target
+- Also processes `.orig.` files for nondestructive remuxing to MP4
+- Ensures files that should be remuxed are handled before skip checks
+
+**Codec Compatibility Checking:**
+- Added `is_codec_mp4_compatible()` function to check if codecs can be copied into MP4
+- Updated `remux_to_mp4()` to check codec compatibility before attempting remux
+- Prevents remux failures with incompatible codecs (wmv3, wmv1, wmv2, vc1, rv40, rv30, theora)
+- Provides clear warning messages when codecs are incompatible
+
+**Testing:**
+- Added 25 new tests covering `is_non_quicklook_format()`, `is_codec_mp4_compatible()`, and `remux_to_mp4()` with codec checking
+- Total test count: 163 tests (up from 138)
+- All tests passing
+
+### Previous Session (Subdirectory Processing)
 
 **Batch Processing with Subdirectory Support:**
 - Modified `find_all_video_files()` to search subdirectories one level deep (`find . -maxdepth 2`)
@@ -366,7 +390,13 @@ The script uses two methods to determine bitrate:
 - `get_source_bitrate()` function measures source video bitrate using the same approach as sample measurement (ffprobe first, file size fallback)
 - Handles both cases: videos already at target (within tolerance) and videos already more compressed than target (below target bitrate)
 - **Automatic renaming for files below target**: When a source file is below target bitrate, it is automatically renamed to include its actual bitrate using the format `{base}.orig.{bitrate}.Mbps.{ext}` (e.g., `video.orig.2.90.Mbps.mp4`). This provides consistent filename formatting even for files that don't need transcoding.
-- **MKV remuxing for optimized files**: For MKV files that are already within tolerance or below target, the script automatically remuxes them to MP4 with QuickLook compatibility (`-movflags +faststart` and `-tag:v hvc1` for HEVC). This converts the container format without transcoding video/audio streams, improving macOS Finder QuickLook compatibility while preserving quality.
+- **Non-QuickLook format remuxing**: The script includes a preprocessing pass (`preprocess_non_quicklook_files()`) that runs before main file discovery. This pass:
+  - Finds all non-QuickLook compatible formats (mkv, wmv, avi, webm, flv) that are within tolerance or below target
+  - Also processes `.orig.` files (nondestructive remuxing for QuickLook compatibility)
+  - Remuxes eligible files to MP4 with QuickLook compatibility (`-movflags +faststart` and `-tag:v hvc1` for HEVC)
+  - Checks codec compatibility before remuxing (skips incompatible codecs like WMV3 with a warning)
+  - This ensures files that should be remuxed are handled before skip checks, preventing them from being skipped when they need remuxing
+- **Codec compatibility checking**: Added `is_codec_mp4_compatible()` function to check if a video codec can be copied into MP4 without transcoding. Incompatible codecs (wmv3, wmv1, wmv2, vc1, rv40, rv30, theora) are skipped with a clear warning message, preventing remux failures.
 
 ### Modularization
 - Refactored script into focused functions for better maintainability

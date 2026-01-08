@@ -134,13 +134,16 @@ TRANSCODE_FULL_CALLS_FILE="$CALL_TRACK_DIR/transcode_full_calls"
 MEASURE_BITRATE_CALLS_FILE="$CALL_TRACK_DIR/measure_bitrate_calls"
 FIND_VIDEO_FILE_CALLS_FILE="$CALL_TRACK_DIR/find_video_file_calls"
 FIND_ALL_VIDEO_FILES_CALLS_FILE="$CALL_TRACK_DIR/find_all_video_files_calls"
+REMUX_CALLS_FILE="$CALL_TRACK_DIR/remux_calls"
 
 # Reset call tracking (call this before each test)
 reset_call_tracking() {
     rm -f "$TRANSCODE_SAMPLE_CALLS_FILE" "$TRANSCODE_FULL_CALLS_FILE" \
-          "$MEASURE_BITRATE_CALLS_FILE" "$FIND_VIDEO_FILE_CALLS_FILE" "$FIND_ALL_VIDEO_FILES_CALLS_FILE"
+          "$MEASURE_BITRATE_CALLS_FILE" "$FIND_VIDEO_FILE_CALLS_FILE" "$FIND_ALL_VIDEO_FILES_CALLS_FILE" \
+          "$REMUX_CALLS_FILE"
     touch "$TRANSCODE_SAMPLE_CALLS_FILE" "$TRANSCODE_FULL_CALLS_FILE" \
-          "$MEASURE_BITRATE_CALLS_FILE" "$FIND_VIDEO_FILE_CALLS_FILE" "$FIND_ALL_VIDEO_FILES_CALLS_FILE"
+          "$MEASURE_BITRATE_CALLS_FILE" "$FIND_VIDEO_FILE_CALLS_FILE" "$FIND_ALL_VIDEO_FILES_CALLS_FILE" \
+          "$REMUX_CALLS_FILE"
 }
 
 # Helper function to count calls (counts lines in file)
@@ -183,6 +186,18 @@ get_video_resolution() {
 get_video_duration() {
     local video_file="$1"
     echo "${MOCK_DURATION:-300}"
+}
+
+# Mock ffprobe for codec detection (used by remux_to_mp4)
+# Returns codec from MOCK_VIDEO_CODEC if set, otherwise returns h264
+ffprobe() {
+    # Check if this is a codec_name query (used by remux_to_mp4)
+    if [[ "$*" == *"codec_name"* ]]; then
+        echo "${MOCK_VIDEO_CODEC:-h264}"
+    else
+        # For other ffprobe calls, return empty (let other mocks handle it)
+        echo ""
+    fi
 }
 
 # Mock measure_bitrate() - tracks calls and returns mock bitrate
@@ -249,6 +264,34 @@ transcode_full_video() {
     
     # Create minimal file so downstream code doesn't fail on file existence checks
     touch "$output_file"
+}
+
+# Mock remux_to_mp4() - tracks calls and checks codec compatibility
+# Uses mocked ffprobe (which reads MOCK_VIDEO_CODEC) to determine if remux should succeed
+remux_to_mp4() {
+    local input_file="$1"
+    local output_file="$2"
+    
+    # Track the call (append to file)
+    echo "$input_file|$output_file" >> "$REMUX_CALLS_FILE"
+    
+    # Detect video codec using mocked ffprobe (which returns MOCK_VIDEO_CODEC)
+    local video_codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$input_file" 2>/dev/null | head -1 | tr -d '\n\r')
+    
+    if [ -z "$video_codec" ]; then
+        # No codec detected - return failure
+        return 1
+    fi
+    
+    # Check codec compatibility
+    if ! is_codec_mp4_compatible "$video_codec"; then
+        # Codec incompatible - return failure
+        return 1
+    fi
+    
+    # Codec compatible - create output file to simulate success
+    touch "$output_file"
+    return 0
 }
 
 # Mock check_requirements() - skip requirement checks in test mode
@@ -451,6 +494,137 @@ test_is_within_tolerance() {
     assert_exit_code $exit_code 0 "is_within_tolerance: handles sanitized inputs"
 }
 test_is_within_tolerance
+
+echo ""
+
+# Test is_non_quicklook_format()
+echo "Testing is_non_quicklook_format()..."
+test_is_non_quicklook_format() {
+    local exit_code
+    
+    # Test non-QuickLook formats (should return 0)
+    set +e
+    is_non_quicklook_format "video.mkv"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_non_quicklook_format: mkv format"
+    
+    set +e
+    is_non_quicklook_format "video.WMV"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_non_quicklook_format: wmv format (case insensitive)"
+    
+    set +e
+    is_non_quicklook_format "video.avi"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_non_quicklook_format: avi format"
+    
+    set +e
+    is_non_quicklook_format "video.webm"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_non_quicklook_format: webm format"
+    
+    set +e
+    is_non_quicklook_format "video.flv"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_non_quicklook_format: flv format"
+    
+    # Test QuickLook-compatible formats (should return 1)
+    set +e
+    is_non_quicklook_format "video.mp4"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "is_non_quicklook_format: mp4 format (compatible)"
+    
+    set +e
+    is_non_quicklook_format "video.mov"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "is_non_quicklook_format: mov format (compatible)"
+    
+    set +e
+    is_non_quicklook_format "video.m4v"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "is_non_quicklook_format: m4v format (compatible)"
+}
+test_is_non_quicklook_format
+
+echo ""
+
+# Test is_codec_mp4_compatible()
+echo "Testing is_codec_mp4_compatible()..."
+test_is_codec_mp4_compatible() {
+    local exit_code
+    
+    # Test compatible codecs (should return 0)
+    set +e
+    is_codec_mp4_compatible "h264"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_codec_mp4_compatible: h264 codec"
+    
+    set +e
+    is_codec_mp4_compatible "HEVC"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_codec_mp4_compatible: hevc codec (case insensitive)"
+    
+    set +e
+    is_codec_mp4_compatible "h265"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_codec_mp4_compatible: h265 codec"
+    
+    set +e
+    is_codec_mp4_compatible "mpeg4"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_codec_mp4_compatible: mpeg4 codec"
+    
+    set +e
+    is_codec_mp4_compatible "avc1"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_codec_mp4_compatible: avc1 codec"
+    
+    # Test incompatible codecs (should return 1)
+    set +e
+    is_codec_mp4_compatible "wmv3"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "is_codec_mp4_compatible: wmv3 codec (incompatible)"
+    
+    set +e
+    is_codec_mp4_compatible "WMV1"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "is_codec_mp4_compatible: wmv1 codec (incompatible, case insensitive)"
+    
+    set +e
+    is_codec_mp4_compatible "vc1"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "is_codec_mp4_compatible: vc1 codec (incompatible)"
+    
+    set +e
+    is_codec_mp4_compatible "rv40"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "is_codec_mp4_compatible: rv40 codec (incompatible)"
+    
+    # Test unknown codec (should return 0 - assume compatible)
+    set +e
+    is_codec_mp4_compatible "unknown_codec"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_codec_mp4_compatible: unknown codec (assumes compatible)"
+}
+test_is_codec_mp4_compatible
 
 echo ""
 
@@ -735,6 +909,35 @@ test_mocked_functions() {
     assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "1" "mocked transcode_full_video: tracks call"
     assert_equal "$(get_first_call "$TRANSCODE_FULL_CALLS_FILE")" "input.mp4|$temp_file|52" "mocked transcode_full_video: tracks call parameters"
     rm -f "$temp_file"
+    
+    # Test mocked remux_to_mp4() with compatible codec
+    reset_call_tracking
+    temp_file=$(mktemp --suffix=.mp4 2>/dev/null || mktemp -t test_remux).mp4
+    MOCK_VIDEO_CODEC="h264"
+    set +e
+    remux_to_mp4 "input.mkv" "$temp_file"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "mocked remux_to_mp4: succeeds with compatible codec (h264)"
+    assert_equal "$(count_calls "$REMUX_CALLS_FILE")" "1" "mocked remux_to_mp4: tracks call"
+    assert_equal "$(get_first_call "$REMUX_CALLS_FILE")" "input.mkv|$temp_file" "mocked remux_to_mp4: tracks call parameters"
+    assert_equal "$([ -f "$temp_file" ]; echo $?)" "0" "mocked remux_to_mp4: creates output file on success"
+    rm -f "$temp_file"
+    unset MOCK_VIDEO_CODEC
+    
+    # Test mocked remux_to_mp4() with incompatible codec
+    reset_call_tracking
+    temp_file=$(mktemp --suffix=.mp4 2>/dev/null || mktemp -t test_remux).mp4
+    MOCK_VIDEO_CODEC="wmv3"
+    set +e
+    remux_to_mp4 "input.wmv" "$temp_file"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "mocked remux_to_mp4: fails with incompatible codec (wmv3)"
+    assert_equal "$(count_calls "$REMUX_CALLS_FILE")" "1" "mocked remux_to_mp4: tracks call even on failure"
+    assert_equal "$([ -f "$temp_file" ]; echo $?)" "1" "mocked remux_to_mp4: does not create output file on failure"
+    rm -f "$temp_file"
+    unset MOCK_VIDEO_CODEC
 }
 test_mocked_functions
 

@@ -9,7 +9,7 @@ A simplified command-line tool for transcoding video files with automatic qualit
 - 🚀 **Hardware acceleration** - Uses Apple VideoToolbox for fast encoding on macOS
 - 📊 **Progress feedback** - Color-coded output with clear status messages
 - ⚡ **Fast iteration** - Uses adaptive multi-point sampling (1-3 samples per iteration based on video length) to quickly find optimal settings
-- ✨ **Smart pre-processing** - Automatically skips transcoding if source video is already within target bitrate tolerance, remuxes MKV files to MP4 for QuickLook compatibility when appropriate, and skips already-encoded files automatically
+- ✨ **Smart pre-processing** - Automatically skips transcoding if source video is already within target bitrate tolerance, remuxes non-QuickLook compatible files (mkv, wmv, avi, webm, flv) to MP4 for QuickLook compatibility when appropriate, and skips already-encoded files automatically. Includes codec compatibility checking to prevent remux failures.
 
 ## Current Defaults
 

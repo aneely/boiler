@@ -339,15 +339,71 @@ is_mkv_file() {
     fi
 }
 
-# Remux MKV file to MP4 with QuickLook compatibility
+# Check if file format is not natively QuickLook compatible (needs remuxing to MP4)
+# Arguments: filename
+# Returns: 0 if needs remuxing, 1 otherwise
+is_non_quicklook_format() {
+    local filename="$1"
+    local ext="${filename##*.}"
+    # Convert to lowercase for comparison (bash 3.2 compatible)
+    local ext_lower=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
+    
+    # Formats that need remuxing: mkv, wmv, avi, webm, flv
+    case "$ext_lower" in
+        mkv|wmv|avi|webm|flv)
+            return 0  # Needs remuxing
+            ;;
+        *)
+            return 1  # Already QuickLook compatible (mp4, mov, m4v)
+            ;;
+    esac
+}
+
+# Check if video codec is compatible with MP4 container (can be copied without transcoding)
+# Arguments: codec_name
+# Returns: 0 if compatible, 1 if not compatible
+is_codec_mp4_compatible() {
+    local codec="$1"
+    local codec_lower=$(echo "$codec" | tr '[:upper:]' '[:lower:]')
+    
+    # MP4-compatible codecs that can be copied directly
+    case "$codec_lower" in
+        h264|avc1|hevc|h265|mpeg4|mpeg4video|mpeg2video|vp8|vp9)
+            return 0  # Compatible
+            ;;
+        wmv3|wmv1|wmv2|vc1|rv40|rv30|theora)
+            return 1  # Not compatible with MP4
+            ;;
+        *)
+            # Unknown codec - assume compatible and let FFmpeg handle it
+            return 0
+            ;;
+    esac
+}
+
+# Remux non-QuickLook compatible video file to MP4 with QuickLook compatibility
 # Copies video and audio streams without transcoding
+# Supports: mkv, wmv, avi, webm, flv (only if codec is MP4-compatible)
 # Arguments: input_file, output_file
-remux_mkv_to_mp4() {
+# Returns: 0 on success, 1 on failure
+remux_to_mp4() {
     local input_file="$1"
     local output_file="$2"
     
-    # Detect video codec to determine if we need HEVC tag
+    # Detect video codec to check compatibility and determine if we need HEVC tag
     local video_codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$input_file" 2>/dev/null | head -1 | tr -d '\n\r')
+    
+    if [ -z "$video_codec" ]; then
+        error "Could not detect video codec for $input_file"
+        return 1
+    fi
+    
+    # Check if codec is compatible with MP4 container
+    if ! is_codec_mp4_compatible "$video_codec"; then
+        local codec_lower=$(echo "$video_codec" | tr '[:upper:]' '[:lower:]')
+        warn "Video codec '$video_codec' is not compatible with MP4 container (cannot be copied without transcoding). Skipping remux for $input_file"
+        return 1
+    fi
     
     # Build ffmpeg command: copy all streams, add QuickLook compatibility flags
     # Start with base command
@@ -365,6 +421,11 @@ remux_mkv_to_mp4() {
     
     # Execute ffmpeg command
     ffmpeg "${ffmpeg_args[@]}" -loglevel info -stats
+}
+
+# Backward compatibility alias (for existing code that calls remux_mkv_to_mp4)
+remux_mkv_to_mp4() {
+    remux_to_mp4 "$@"
 }
 
 # Measure bitrate from a video file
@@ -855,6 +916,225 @@ cleanup_samples() {
     rm -f "${video_file%.*}_sample"*.mp4
 }
 
+# Preprocess non-QuickLook compatible files: remux files that are within tolerance or below target
+# This runs before the main file discovery to catch files that should be remuxed
+# Also processes .orig. files (nondestructive remuxing for QuickLook compatibility)
+# Returns: number of files remuxed
+preprocess_non_quicklook_files() {
+    local non_quicklook_extensions=("mkv" "wmv" "avi" "webm" "flv")
+    local files_to_check=()
+    local remuxed_count=0
+    
+    # Find all non-QuickLook format files
+    # Include files with .orig. markers (nondestructive remuxing) and files without markers
+    for ext in "${non_quicklook_extensions[@]}"; do
+        while IFS= read -r found; do
+            if [ -n "$found" ] && [ -f "$found" ]; then
+                local basename=$(basename "$found")
+                # Include files without markers OR files with .orig. marker (for nondestructive remuxing)
+                if ! should_skip_file "$found" || [[ "$basename" == *".orig."* ]]; then
+                    # Double-check: only include if it's actually a non-QuickLook format
+                    if is_non_quicklook_format "$found"; then
+                        files_to_check+=("$found")
+                    fi
+                fi
+            fi
+        done < <(find . -maxdepth 2 -type f -iname "*.${ext}" 2>/dev/null)
+    done
+    
+    if [ ${#files_to_check[@]} -eq 0 ]; then
+        return 0  # No files to process
+    fi
+    
+    info "Pre-processing: Checking ${#files_to_check[@]} non-QuickLook compatible file(s) for remuxing..."
+    
+    # Check requirements (only check once)
+    if [ -z "${REQUIREMENTS_CHECKED:-}" ]; then
+        check_requirements
+        export REQUIREMENTS_CHECKED=1
+    fi
+    
+    # Process each file
+    for file_path in "${files_to_check[@]}"; do
+        # Check if interrupted
+        if [ "$INTERRUPTED" -eq 1 ]; then
+            error "Pre-processing interrupted, exiting"
+            exit 130
+        fi
+        
+        local basename=$(basename "$file_path")
+        local is_orig_file=0
+        
+        # Check if this is an .orig. file (already marked as acceptable, just needs remuxing)
+        if [[ "$basename" == *".orig."* ]]; then
+            is_orig_file=1
+        fi
+        
+        # For .orig. files, extract bitrate from filename and remux directly
+        # For other files, check bitrate to determine if remuxing is needed
+        if [ "$is_orig_file" -eq 1 ]; then
+            # Extract bitrate from filename: {base}.orig.{bitrate}.Mbps.{ext}
+            # We'll preserve the existing filename structure, just change extension to .mp4
+            parse_filename "$file_path"
+            
+            # Extract bitrate from filename if possible (format: {base}.orig.{bitrate}.Mbps.{ext})
+            local bitrate_from_filename=""
+            if [[ "$basename" == *".orig."*".Mbps."* ]]; then
+                # Extract bitrate: everything between .orig. and .Mbps.
+                local temp="${basename#*.orig.}"
+                bitrate_from_filename="${temp%%.Mbps.*}"
+            fi
+            
+            # Generate output filename: preserve .orig.{bitrate}.Mbps. structure, change extension to .mp4
+            local output_file=""
+            if [ -n "$bitrate_from_filename" ]; then
+                # Use bitrate from filename
+                local base_part="${basename%%.orig.*}"
+                local dirname=$(dirname "$file_path")
+                if [ "$dirname" != "." ]; then
+                    output_file="${dirname}/${base_part}.orig.${bitrate_from_filename}.Mbps.mp4"
+                else
+                    output_file="${base_part}.orig.${bitrate_from_filename}.Mbps.mp4"
+                fi
+            else
+                # Fallback: get bitrate from file if not in filename
+                local video_duration
+                local source_bitrate_bps
+                local source_bitrate_mbps
+                
+                if ! video_duration=$(get_video_duration "$file_path" 2>/dev/null); then
+                    warn "Skipping $file_path: Could not determine duration"
+                    continue
+                fi
+                
+                source_bitrate_bps=$(get_source_bitrate "$file_path" "$video_duration")
+                if [ -z "$source_bitrate_bps" ]; then
+                    warn "Skipping $file_path: Could not determine bitrate"
+                    continue
+                fi
+                source_bitrate_mbps=$(bps_to_mbps "$source_bitrate_bps")
+                
+                local base_part="${basename%%.orig.*}"
+                local dirname=$(dirname "$file_path")
+                if [ "$dirname" != "." ]; then
+                    output_file="${dirname}/${base_part}.orig.${source_bitrate_mbps}.Mbps.mp4"
+                else
+                    output_file="${base_part}.orig.${source_bitrate_mbps}.Mbps.mp4"
+                fi
+            fi
+            
+            # Show directory context if file is in a subdirectory
+            local file_dir=$(dirname "$file_path")
+            if [ "$file_dir" != "." ]; then
+                info "Remuxing .orig. file $file_path for QuickLook compatibility (nondestructive)"
+            else
+                info "Remuxing .orig. file $(basename "$file_path") for QuickLook compatibility (nondestructive)"
+            fi
+            
+            # Remux to MP4
+            if remux_to_mp4 "$file_path" "$output_file"; then
+                # Remove original file only if remux succeeded
+                rm -f "$file_path"
+                remuxed_count=$((remuxed_count + 1))
+                if [ "$file_dir" != "." ]; then
+                    info "Remuxed to: $output_file"
+                else
+                    info "Remuxed to: $(basename "$output_file")"
+                fi
+            else
+                error "Failed to remux $file_path. Original file preserved."
+                rm -f "$output_file"  # Clean up partial output
+            fi
+        else
+            # Regular file: check bitrate to determine if remuxing is needed
+            # Get video properties
+            local resolution
+            local video_duration
+            local source_bitrate_bps
+            local source_bitrate_mbps
+            local target_bitrate_mbps
+            local target_bitrate_bps
+            local lower_bound
+            local upper_bound
+            
+            # Skip if we can't get resolution (file might be corrupted)
+            if ! resolution=$(get_video_resolution "$file_path" 2>/dev/null); then
+                warn "Skipping $file_path: Could not determine resolution"
+                continue
+            fi
+            
+            # Skip if we can't get duration
+            if ! video_duration=$(get_video_duration "$file_path" 2>/dev/null); then
+                warn "Skipping $file_path: Could not determine duration"
+                continue
+            fi
+            
+            # Calculate target bitrate
+            calculate_target_bitrate "$resolution"
+            target_bitrate_mbps=$TARGET_BITRATE_MBPS
+            target_bitrate_bps=$TARGET_BITRATE_BPS
+            
+            # Calculate acceptable bitrate range (within 5% of target)
+            lower_bound=$(echo "$target_bitrate_bps * 0.95" | bc | tr -d '\n\r')
+            upper_bound=$(echo "$target_bitrate_bps * 1.05" | bc | tr -d '\n\r')
+            
+            # Get source bitrate
+            source_bitrate_bps=$(get_source_bitrate "$file_path" "$video_duration")
+            
+            if [ -z "$source_bitrate_bps" ]; then
+                warn "Skipping $file_path: Could not determine bitrate"
+                continue
+            fi
+            
+            source_bitrate_mbps=$(bps_to_mbps "$source_bitrate_bps")
+            
+            # Check if source is within tolerance or below target
+            local should_remux=0
+            
+            if is_within_tolerance "$source_bitrate_bps" "$lower_bound" "$upper_bound"; then
+                should_remux=1
+            elif (( $(echo "$(sanitize_value "$source_bitrate_bps") < $target_bitrate_bps" | bc -l) )); then
+                should_remux=1
+            fi
+            
+            if [ "$should_remux" -eq 1 ]; then
+                # Parse filename to get base name
+                parse_filename "$file_path"
+                local output_file="${BASE_NAME}.orig.${source_bitrate_mbps}.Mbps.mp4"
+                
+                # Show directory context if file is in a subdirectory
+                local file_dir=$(dirname "$file_path")
+                if [ "$file_dir" != "." ]; then
+                    info "Remuxing $file_path (bitrate: ${source_bitrate_mbps} Mbps, within tolerance or below target)"
+                else
+                    info "Remuxing $(basename "$file_path") (bitrate: ${source_bitrate_mbps} Mbps, within tolerance or below target)"
+                fi
+                
+                # Remux to MP4
+                if remux_to_mp4 "$file_path" "$output_file"; then
+                    # Remove original file only if remux succeeded
+                    rm -f "$file_path"
+                    remuxed_count=$((remuxed_count + 1))
+                    if [ "$file_dir" != "." ]; then
+                        info "Remuxed to: $output_file"
+                    else
+                        info "Remuxed to: $(basename "$output_file")"
+                    fi
+                else
+                    error "Failed to remux $file_path. Original file preserved."
+                    rm -f "$output_file"  # Clean up partial output
+                fi
+            fi
+        fi
+    done
+    
+    if [ $remuxed_count -gt 0 ]; then
+        info "Pre-processing complete: Remuxed ${remuxed_count} file(s) for QuickLook compatibility"
+    fi
+    
+    return $remuxed_count
+}
+
 # Transcode video function
 # Arguments: [video_file] - Optional. If provided, processes that file. Otherwise finds first file in current directory.
 transcode_video() {
@@ -902,21 +1182,22 @@ transcode_video() {
             
             parse_filename "$VIDEO_FILE"
             
-            # Check if file is MKV and needs remuxing to MP4 (bash 3.2 compatible)
-            local ext_lower=$(echo "$FILE_EXTENSION" | tr '[:upper:]' '[:lower:]')
-            if [ "$ext_lower" = "mkv" ]; then
-                info "File is MKV format. Remuxing to MP4 with QuickLook compatibility (copying streams, no transcoding)..."
+            # Check if file needs remuxing to MP4 for QuickLook compatibility
+            if is_non_quicklook_format "$VIDEO_FILE"; then
+                local format_name=$(echo "$FILE_EXTENSION" | tr '[:upper:]' '[:lower:]')
+                local format_upper=$(echo "$format_name" | tr '[:lower:]' '[:upper:]')
+                info "File is ${format_upper} format. Remuxing to MP4 with QuickLook compatibility (copying streams, no transcoding)..."
                 
                 # Generate MP4 output filename: {base}.orig.{bitrate}.Mbps.mp4
                 local output_file="${BASE_NAME}.orig.${SOURCE_BITRATE_MBPS}.Mbps.mp4"
                 
-                # Remux MKV to MP4
-                if remux_mkv_to_mp4 "$VIDEO_FILE" "$output_file"; then
-                    # Remove original MKV file only if remux succeeded
+                # Remux to MP4
+                if remux_to_mp4 "$VIDEO_FILE" "$output_file"; then
+                    # Remove original file only if remux succeeded
                     rm -f "$VIDEO_FILE"
                     info "Remuxed file to: $output_file"
                 else
-                    error "Failed to remux MKV file. Original file preserved."
+                    error "Failed to remux ${format_upper} file. Original file preserved."
                     rm -f "$output_file"  # Clean up partial output
                     return 1
                 fi
@@ -942,22 +1223,22 @@ transcode_video() {
             
             parse_filename "$VIDEO_FILE"
             
-            # Check if file is MKV and needs remuxing to MP4
-            # Use FILE_EXTENSION from parse_filename for more reliable detection (bash 3.2 compatible)
-            local ext_lower=$(echo "$FILE_EXTENSION" | tr '[:upper:]' '[:lower:]')
-            if [ "$ext_lower" = "mkv" ]; then
-                info "File is MKV format. Remuxing to MP4 with QuickLook compatibility (copying streams, no transcoding)..."
+            # Check if file needs remuxing to MP4 for QuickLook compatibility
+            if is_non_quicklook_format "$VIDEO_FILE"; then
+                local format_name=$(echo "$FILE_EXTENSION" | tr '[:upper:]' '[:lower:]')
+                local format_upper=$(echo "$format_name" | tr '[:lower:]' '[:upper:]')
+                info "File is ${format_upper} format. Remuxing to MP4 with QuickLook compatibility (copying streams, no transcoding)..."
                 
                 # Generate MP4 output filename: {base}.orig.{bitrate}.Mbps.mp4
                 local output_file="${BASE_NAME}.orig.${SOURCE_BITRATE_MBPS}.Mbps.mp4"
                 
-                # Remux MKV to MP4
-                if remux_mkv_to_mp4 "$VIDEO_FILE" "$output_file"; then
-                    # Remove original MKV file only if remux succeeded
+                # Remux to MP4
+                if remux_to_mp4 "$VIDEO_FILE" "$output_file"; then
+                    # Remove original file only if remux succeeded
                     rm -f "$VIDEO_FILE"
                     info "Remuxed file to: $output_file"
                 else
-                    error "Failed to remux MKV file. Original file preserved."
+                    error "Failed to remux ${format_upper} file. Original file preserved."
                     rm -f "$output_file"  # Clean up partial output
                     return 1
                 fi
@@ -1053,6 +1334,9 @@ transcode_video() {
 
 # Main function - processes all video files in current directory
 main() {
+    # Preprocess non-QuickLook compatible files first (remux files within tolerance or below target)
+    preprocess_non_quicklook_files
+    
     # Get all video files in current directory (bash 3.2 compatible - no mapfile)
     local video_files=()
     while IFS= read -r line; do

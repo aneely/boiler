@@ -33,8 +33,10 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Early exit check: Skip transcoding if source video is already within ±5% of target bitrate
 - [x] MKV remuxing: Automatically remuxes MKV files that are within tolerance or below target to MP4 with QuickLook compatibility (copies streams without transcoding)
 - [x] Helper scripts for testing (copy test videos, cleanup)
-- [x] Comprehensive test suite with function mocking (138 tests, CI/CD ready)
+- [x] Comprehensive test suite with function mocking (163 tests, CI/CD ready)
 - [x] Second pass transcoding: Automatically performs a second transcoding pass with adjusted quality if the first pass bitrate is outside tolerance range
+- [x] Preprocessing pass for non-QuickLook formats: Automatically remuxes non-QuickLook compatible files (mkv, wmv, avi, webm, flv) that are within tolerance or below target, including `.orig.` files, before main file discovery
+- [x] Codec compatibility checking: Checks codec compatibility before remuxing to prevent failures with incompatible codecs (e.g., WMV3)
 
 ### Current Defaults
 
