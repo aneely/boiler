@@ -41,13 +41,20 @@ has_transcoding_marker() {
     return 1  # No marker (is original file)
 }
 
-# Move file to macOS trash using AppleScript
+# Move file to macOS trash
+# Uses native `trash` command on macOS 15+ (Sequoia), falls back to AppleScript on older versions
 move_to_trash() {
     local file_path="$1"
-    local abs_path=$(cd "$(dirname "$file_path")" && pwd)/$(basename "$file_path")
     
-    # Use AppleScript to move to trash (proper macOS way)
-    osascript -e "tell application \"Finder\" to move POSIX file \"$abs_path\" to trash" 2>/dev/null
+    # Check if native `trash` command is available (macOS 15 Sequoia+)
+    if command -v trash >/dev/null 2>&1; then
+        # Use native trash command (simpler, faster)
+        trash "$file_path" 2>/dev/null
+    else
+        # Fall back to AppleScript for older macOS versions
+        local abs_path=$(cd "$(dirname "$file_path")" && pwd)/$(basename "$file_path")
+        osascript -e "tell application \"Finder\" to move POSIX file \"$abs_path\" to trash" 2>/dev/null
+    fi
 }
 
 # Video file extensions to process
