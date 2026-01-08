@@ -33,7 +33,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Early exit check: Skip transcoding if source video is already within ±5% of target bitrate
 - [x] MKV remuxing: Automatically remuxes MKV files that are within tolerance or below target to MP4 with QuickLook compatibility (copies streams without transcoding)
 - [x] Helper scripts for testing (copy test videos, cleanup)
-- [x] Comprehensive test suite with function mocking (163 tests, CI/CD ready)
+- [x] Comprehensive test suite with function mocking (183 tests, CI/CD ready)
 - [x] Second pass transcoding: Automatically performs a second transcoding pass with adjusted quality if the first pass bitrate is outside tolerance range
 - [x] Preprocessing pass for non-QuickLook formats: Automatically remuxes non-QuickLook compatible files (mkv, wmv, avi, webm, flv) that are within tolerance or below target, including `.orig.` files, before main file discovery
 - [x] Codec compatibility checking: Checks codec compatibility before remuxing to prevent failures with incompatible codecs (e.g., WMV3)
@@ -58,6 +58,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - `copy-1080p-test.sh` - Copies 1080p test video to current directory
 - `copy-4k-test.sh` - Copies 4K test video to current directory
 - `cleanup-mp4.sh` - Removes all .mp4 files from project root directory
+- `cleanup-originals.sh` - Removes all `.orig.` marked video files from current directory and subdirectories (moves to trash)
 
 ### Known Issues / Recent Changes
 
@@ -66,7 +67,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - **Multi-point sampling**: Implemented to address issue where single sample from beginning didn't accurately predict full video bitrate.
 - **No iteration limit**: Removed iteration limit safeguard - loop continues until convergence or quality bounds (0-100) are reached.
 - **Code refactoring**: Consolidated duplicate bitrate measurement logic into generic `measure_bitrate()` function. Extracted tolerance checking into `is_within_tolerance()` helper. Added `sanitize_value()` helper for consistent value sanitization. Renamed `find_optimal_bitrate()` to `find_optimal_quality()` to reflect constant quality mode.
-- **Testing infrastructure**: Implemented comprehensive test suite with function mocking using file-based call tracking. 138 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` unit tests, and error handling tests). Tests work without FFmpeg/ffprobe installation, enabling CI/CD workflows. Uses temporary files for call tracking to work around bash subshell limitations.
+- **Testing infrastructure**: Implemented comprehensive test suite with function mocking using file-based call tracking. 183 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` unit tests, codec compatibility checking, and error handling tests). Tests work without FFmpeg/ffprobe installation, enabling CI/CD workflows. Uses temporary files for call tracking to work around bash subshell limitations.
 - **Sample duration**: Sample duration is set to 60 seconds for better bitrate accuracy. Adaptive sampling logic uses fewer samples for shorter videos (1 sample for videos <120s, 2 samples for 120-179s, 3 samples for ≥180s).
 - **FFmpeg process cleanup**: Signal handling implemented to kill process group on interrupt, but may need verification.
 

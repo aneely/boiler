@@ -174,7 +174,7 @@ For testing and development, helper scripts are available:
 
 ### Running Tests
 
-The project includes a comprehensive test suite (`test_boiler.sh`) with 138 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full integration tests (including second pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` unit tests, and error handling tests). The test suite uses function mocking to avoid requiring actual video files or FFmpeg installation, making it suitable for CI/CD environments.
+The project includes a comprehensive test suite (`test_boiler.sh`) with 183 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full integration tests (including second pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` unit tests, codec compatibility checking, and error handling tests). The test suite uses function mocking to avoid requiring actual video files or FFmpeg installation, making it suitable for CI/CD environments.
 
 To run the test suite:
 ```bash

@@ -33,7 +33,7 @@ This ensures the user maintains control over the development direction and can m
 **Before committing ANY changes, you MUST:**
 1. **Run the test suite**: Execute `bash test_boiler.sh` and verify it completes successfully
 2. **Verify exit code**: The test suite MUST exit with code 0 (all tests passing)
-3. **Check test output**: Review the test summary to confirm all tests passed (e.g., "Passed: 138, Failed: 0")
+3. **Check test output**: Review the test summary to confirm all tests passed (e.g., "Passed: 183, Failed: 0")
 4. **Fix any failures**: If ANY tests fail, you MUST fix the issues before committing
 5. **NEVER commit without running tests**: Do not skip this step, even for minor changes
 
@@ -100,6 +100,9 @@ The script is modularized into the following function categories:
 - `find_skipped_video_files()` - Finds all skipped video files (files with `.hbrk.`, `.fmpg.`, or `.orig.` markers) in current directory and subdirectories (one level deep)
 - `find_video_file()` - Discovers first video file in current directory (for backward compatibility)
 - `is_mkv_file()` - Checks if a file is MKV container format (case-insensitive, bash 3.2 compatible)
+- `is_non_quicklook_format()` - Checks if a file is a non-QuickLook compatible format (mkv, wmv, avi, webm, flv)
+- `is_codec_mp4_compatible()` - Checks if a video codec can be copied into MP4 container without transcoding
+- `get_video_codec()` - Extracts video codec using ffprobe
 - `get_video_resolution()` - Extracts video resolution using ffprobe
 - `get_video_duration()` - Extracts video duration using ffprobe
 - `sanitize_value()` - Sanitizes values for bc calculations (removes newlines, carriage returns, trims whitespace)
@@ -126,6 +129,7 @@ The script is modularized into the following function categories:
 
 **Preprocessing Functions:**
 - `preprocess_non_quicklook_files()` - Preprocessing pass that remuxes non-QuickLook compatible files (mkv, wmv, avi, webm, flv) that are within tolerance or below target, including `.orig.` files. Runs before main file discovery to catch files that should be remuxed before skip checks.
+- `handle_non_quicklook_at_target()` - Handles non-QuickLook format files that are within tolerance or below target bitrate. Checks codec compatibility and either remuxes (if compatible) or transcodes (if incompatible) to ensure QuickLook compatibility.
 
 **Main Orchestration:**
 - `preprocess_non_quicklook_files()` - Preprocessing pass that remuxes eligible non-QuickLook files before main processing. Automatically transcodes files with incompatible codecs (e.g., WMV3) that are within tolerance or below target, preserving bitrate for QuickLook compatibility
@@ -134,6 +138,7 @@ The script is modularized into the following function categories:
 
 **Signal Handling:**
 - `cleanup_on_exit()` - Cleanup function registered with trap to kill process group and remove sample files on exit/interrupt
+- `handle_interrupt()` - Signal handler for interrupts (Ctrl+C) that sets interrupt flag and triggers cleanup
 
 **Logging Functions:**
 - `info()`, `warn()`, `error()` - Color-coded output functions (output to stderr to avoid interfering with function return values)
@@ -219,10 +224,11 @@ The script uses an iterative approach to find the optimal quality setting using 
 ```
 boiler/
 ├── boiler.sh                    # Main transcoding script
-├── test_boiler.sh               # Test suite with function mocking (138 tests)
+├── test_boiler.sh               # Test suite with function mocking (183 tests)
 ├── copy-1080p-test.sh          # Helper: Copy 1080p test video to current directory
 ├── copy-4k-test.sh              # Helper: Copy 4K test video to current directory
 ├── cleanup-mp4.sh               # Helper: Remove all .mp4 files from project root
+├── cleanup-originals.sh          # Helper: Remove all .orig. marked video files (moves to trash)
 ├── .gitignore                   # Git ignore patterns (macOS, video files, outputs)
 ├── PROJECT-CONTEXT.md           # Technical documentation
 ├── PLAN.md                      # Development roadmap
@@ -273,7 +279,7 @@ The script uses two methods to determine bitrate:
 ### Testing Infrastructure
 
 **Test Suite (`test_boiler.sh`):**
-- **138 tests** covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` unit tests, and error handling tests)
+- **183 tests** covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` unit tests, codec compatibility checking, and error handling tests)
 - **Function mocking approach**: Uses file-based call tracking to mock FFmpeg/ffprobe-dependent functions without requiring actual video files or FFmpeg installation
 - **Mocked functions**:
   - `get_video_resolution()` - Returns configurable resolution (default: 1080p)
@@ -344,7 +350,7 @@ The script uses two methods to determine bitrate:
 - Updated `find_skipped_video_files()` to search subdirectories one level deep
 - Enhanced `main()` to show directory context in progress messages for files in subdirectories
 - Output files are created in the same directory as their source files
-- All existing tests pass (138 tests total)
+- All existing tests pass (183 tests total)
 
 ### Previous Session (Testing Infrastructure)
 
