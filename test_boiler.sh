@@ -1334,6 +1334,214 @@ test_main
 
 echo ""
 
+# Test transcode_video() with target bitrate override
+echo "Testing transcode_video() with target bitrate override..."
+test_transcode_video_bitrate_override() {
+    local test_dir
+    local test_file
+    local output
+    local exit_code
+    local temp_dir
+    
+    # Create a temporary directory for each test to avoid conflicts
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || exit 1
+    
+    reset_call_tracking
+    test_file="test_video.mp4"
+    touch "$test_file"
+    MOCK_VIDEO_FILE="$test_file"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=12000000  # 12 Mbps (above 8 Mbps target, would normally transcode to 8 Mbps)
+    MOCK_SAMPLE_BITRATE_BPS=6000000  # Sample bitrate at override target (6 Mbps)
+    MOCK_OUTPUT_BITRATE_BPS=6000000  # Output should be at override target (6 Mbps)
+    
+    # Call transcode_video with bitrate override of 6 Mbps
+    set +e
+    output=$(transcode_video "$test_file" "6" 2>&1)
+    exit_code=$?
+    set -e
+    
+    assert_exit_code $exit_code 0 "transcode_video: completes with bitrate override"
+    assert_not_empty "$(echo "$output" | grep -i "Target bitrate (override): 6" || true)" "transcode_video: outputs override bitrate message"
+    assert_not_empty "$(echo "$output" | grep -i "transcoding complete" || true)" "transcode_video: outputs completion message"
+    # Verify transcode_full_video was called
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "1" "transcode_video: calls transcode_full_video with override"
+    
+    # Cleanup
+    rm -f "$test_file" *.mp4 *.fmpg.*.mp4 2>/dev/null
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_SAMPLE_BITRATE_BPS MOCK_OUTPUT_BITRATE_BPS
+    
+    # Return to original directory
+    cd - > /dev/null || true
+    rm -rf "$temp_dir"
+}
+test_transcode_video_bitrate_override
+
+echo ""
+
+# Test codec incompatibility handling in transcode_video() (within tolerance)
+echo "Testing codec incompatibility in transcode_video() (within tolerance)..."
+test_transcode_video_codec_incompatible_within_tolerance() {
+    local test_dir
+    local test_file
+    local output
+    local exit_code
+    local temp_dir
+    
+    # Create a temporary directory for each test to avoid conflicts
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || exit 1
+    
+    reset_call_tracking
+    test_file="test_video.wmv"
+    touch "$test_file"
+    MOCK_VIDEO_FILE="$test_file"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=8000000  # 8 Mbps (exactly at target, within tolerance)
+    MOCK_VIDEO_CODEC="wmv3"  # Incompatible codec
+    MOCK_SAMPLE_BITRATE_BPS=8000000  # Sample bitrate at source bitrate (8 Mbps)
+    MOCK_OUTPUT_BITRATE_BPS=8000000  # Output should be at source bitrate (8 Mbps)
+    
+    set +e
+    output=$(transcode_video "$test_file" 2>&1)
+    exit_code=$?
+    set -e
+    
+    assert_exit_code $exit_code 0 "transcode_video: completes transcoding for incompatible codec within tolerance"
+    assert_not_empty "$(echo "$output" | grep -i "not compatible with MP4 container" || true)" "transcode_video: outputs codec incompatibility warning"
+    assert_not_empty "$(echo "$output" | grep -i "Transcoding to HEVC at source bitrate" || true)" "transcode_video: outputs transcoding message"
+    assert_not_empty "$(echo "$output" | grep -i "transcoding complete" || true)" "transcode_video: outputs completion message"
+    # Verify transcode_full_video was called (should transcode instead of remuxing)
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "1" "transcode_video: calls transcode_full_video for incompatible codec"
+    # Verify output file uses .orig. pattern (since it's at/below target)
+    local output_file="test_video.orig.8.00.Mbps.mp4"
+    if [ -f "$output_file" ]; then
+        assert_equal "1" "1" "transcode_video: creates .orig. file for incompatible codec within tolerance"
+    else
+        # Check if any .orig. file exists
+        local orig_files=$(ls -1 *.orig.*.mp4 2>/dev/null | wc -l | tr -d ' ')
+        assert_not_equal "$orig_files" "0" "transcode_video: creates .orig. file for incompatible codec within tolerance"
+    fi
+    
+    # Cleanup
+    rm -f "$test_file" *.mp4 *.orig.*.mp4 2>/dev/null
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_VIDEO_CODEC MOCK_SAMPLE_BITRATE_BPS MOCK_OUTPUT_BITRATE_BPS
+    
+    # Return to original directory
+    cd - > /dev/null || true
+    rm -rf "$temp_dir"
+}
+test_transcode_video_codec_incompatible_within_tolerance
+
+echo ""
+
+# Test codec incompatibility handling in transcode_video() (below target)
+echo "Testing codec incompatibility in transcode_video() (below target)..."
+test_transcode_video_codec_incompatible_below_target() {
+    local test_dir
+    local test_file
+    local output
+    local exit_code
+    local temp_dir
+    
+    # Create a temporary directory for each test to avoid conflicts
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || exit 1
+    
+    reset_call_tracking
+    test_file="test_video.wmv"
+    touch "$test_file"
+    MOCK_VIDEO_FILE="$test_file"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=5000000  # 5 Mbps (below 8 Mbps target)
+    MOCK_VIDEO_CODEC="wmv3"  # Incompatible codec
+    MOCK_SAMPLE_BITRATE_BPS=5000000  # Sample bitrate at source bitrate (5 Mbps)
+    MOCK_OUTPUT_BITRATE_BPS=5000000  # Output should be at source bitrate (5 Mbps)
+    
+    set +e
+    output=$(transcode_video "$test_file" 2>&1)
+    exit_code=$?
+    set -e
+    
+    assert_exit_code $exit_code 0 "transcode_video: completes transcoding for incompatible codec below target"
+    assert_not_empty "$(echo "$output" | grep -i "not compatible with MP4 container" || true)" "transcode_video: outputs codec incompatibility warning"
+    assert_not_empty "$(echo "$output" | grep -i "Transcoding to HEVC at source bitrate" || true)" "transcode_video: outputs transcoding message"
+    assert_not_empty "$(echo "$output" | grep -i "transcoding complete" || true)" "transcode_video: outputs completion message"
+    # Verify transcode_full_video was called (should transcode instead of remuxing)
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "1" "transcode_video: calls transcode_full_video for incompatible codec below target"
+    # Verify output file uses .orig. pattern (since it's below target)
+    local output_file="test_video.orig.5.00.Mbps.mp4"
+    if [ -f "$output_file" ]; then
+        assert_equal "1" "1" "transcode_video: creates .orig. file for incompatible codec below target"
+    else
+        # Check if any .orig. file exists
+        local orig_files=$(ls -1 *.orig.*.mp4 2>/dev/null | wc -l | tr -d ' ')
+        assert_not_equal "$orig_files" "0" "transcode_video: creates .orig. file for incompatible codec below target"
+    fi
+    
+    # Cleanup
+    rm -f "$test_file" *.mp4 *.orig.*.mp4 2>/dev/null
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_VIDEO_CODEC MOCK_SAMPLE_BITRATE_BPS MOCK_OUTPUT_BITRATE_BPS
+    
+    # Return to original directory
+    cd - > /dev/null || true
+    rm -rf "$temp_dir"
+}
+test_transcode_video_codec_incompatible_below_target
+
+echo ""
+
+# Test codec incompatibility handling in preprocess_non_quicklook_files()
+echo "Testing codec incompatibility in preprocess_non_quicklook_files()..."
+test_preprocess_codec_incompatible() {
+    local test_dir
+    local test_file
+    local output
+    local exit_code
+    local temp_dir
+    
+    # Create a temporary directory for each test to avoid conflicts
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || exit 1
+    
+    reset_call_tracking
+    test_file="test_video.wmv"
+    touch "$test_file"
+    MOCK_VIDEO_FILE="$test_file"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=8000000  # 8 Mbps (exactly at target, within tolerance)
+    MOCK_VIDEO_CODEC="wmv3"  # Incompatible codec
+    MOCK_SAMPLE_BITRATE_BPS=8000000  # Sample bitrate at source bitrate (8 Mbps)
+    MOCK_OUTPUT_BITRATE_BPS=8000000  # Output should be at source bitrate (8 Mbps)
+    
+    set +e
+    output=$(preprocess_non_quicklook_files 2>&1)
+    exit_code=$?
+    set -e
+    
+    assert_exit_code $exit_code 1 "preprocess_non_quicklook_files: completes for incompatible codec (returns count of processed files)"
+    assert_not_empty "$(echo "$output" | grep -i "not compatible with MP4 container" || true)" "preprocess_non_quicklook_files: outputs codec incompatibility warning"
+    assert_not_empty "$(echo "$output" | grep -i "Transcoding.*to HEVC at source bitrate" || true)" "preprocess_non_quicklook_files: outputs transcoding message"
+    # Verify transcode_full_video was called (should transcode instead of remuxing)
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "1" "preprocess_non_quicklook_files: calls transcode_full_video for incompatible codec"
+    
+    # Cleanup
+    rm -f "$test_file" *.mp4 *.orig.*.mp4 2>/dev/null
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_VIDEO_CODEC MOCK_SAMPLE_BITRATE_BPS MOCK_OUTPUT_BITRATE_BPS
+    
+    # Return to original directory
+    cd - > /dev/null || true
+    rm -rf "$temp_dir"
+}
+test_preprocess_codec_incompatible
+
+echo ""
+
 # Print test summary
 echo "=========================================="
 echo "Test Summary:"

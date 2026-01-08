@@ -381,6 +381,73 @@ is_codec_mp4_compatible() {
     esac
 }
 
+# Get video codec name from a video file
+# Arguments: file_path
+# Returns: codec name (or empty string if unavailable)
+get_video_codec() {
+    local file_path="$1"
+    ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$file_path" 2>/dev/null | head -1 | tr -d '\n\r'
+}
+
+# Handle non-QuickLook format files that are at/below target bitrate
+# Checks codec compatibility and either remuxes or sets up transcoding
+# Arguments: video_file, source_bitrate_mbps, needs_transcode_flag_ref (name of variable to set)
+# Returns: 0 if handled (remuxed or set up for transcoding), 1 if error
+# Sets needs_transcode_flag_ref=1 if transcoding needed, 0 otherwise
+handle_non_quicklook_at_target() {
+    local video_file="$1"
+    local source_bitrate_mbps="$2"
+    local needs_transcode_flag_ref="$3"
+    
+    # Initialize the flag variable
+    eval "$needs_transcode_flag_ref=0"
+    
+    # Parse filename to get extension
+    parse_filename "$video_file"
+    
+    # Check if file is non-QuickLook format
+    if ! is_non_quicklook_format "$video_file"; then
+        return 1  # Not a non-QuickLook format
+    fi
+    
+    local format_name=$(echo "$FILE_EXTENSION" | tr '[:upper:]' '[:lower:]')
+    local format_upper=$(echo "$format_name" | tr '[:lower:]' '[:upper:]')
+    
+    # Get video codec
+    local video_codec=$(get_video_codec "$video_file")
+    
+    if [ -z "$video_codec" ]; then
+        error "Could not detect video codec for $video_file"
+        return 1
+    fi
+    
+    # Check codec compatibility
+    if ! is_codec_mp4_compatible "$video_codec"; then
+        # Codec is incompatible - set up transcoding
+        warn "Video codec '$video_codec' is not compatible with MP4 container. Transcoding to HEVC at source bitrate (${source_bitrate_mbps} Mbps) for QuickLook compatibility..."
+        eval "$needs_transcode_flag_ref=1"
+        return 0  # Successfully set up for transcoding
+    else
+        # Codec is compatible - try remuxing
+        info "File is ${format_upper} format. Remuxing to MP4 with QuickLook compatibility (copying streams, no transcoding)..."
+        
+        # Generate MP4 output filename: {base}.orig.{bitrate}.Mbps.mp4
+        local output_file="${BASE_NAME}.orig.${source_bitrate_mbps}.Mbps.mp4"
+        
+        # Remux to MP4
+        if remux_to_mp4 "$video_file" "$output_file"; then
+            # Remove original file only if remux succeeded
+            rm -f "$video_file"
+            info "Remuxed file to: $output_file"
+            return 0
+        else
+            error "Failed to remux ${format_upper} file. Original file preserved."
+            rm -f "$output_file"  # Clean up partial output
+            return 1
+        fi
+    fi
+}
+
 # Remux non-QuickLook compatible video file to MP4 with QuickLook compatibility
 # Copies video and audio streams without transcoding
 # Supports: mkv, wmv, avi, webm, flv (only if codec is MP4-compatible)
@@ -391,7 +458,7 @@ remux_to_mp4() {
     local output_file="$2"
     
     # Detect video codec to check compatibility and determine if we need HEVC tag
-    local video_codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$input_file" 2>/dev/null | head -1 | tr -d '\n\r')
+    local video_codec=$(get_video_codec "$input_file")
     
     if [ -z "$video_codec" ]; then
         error "Could not detect video codec for $input_file"
@@ -1104,24 +1171,31 @@ preprocess_non_quicklook_files() {
                 
                 # Show directory context if file is in a subdirectory
                 local file_dir=$(dirname "$file_path")
-                if [ "$file_dir" != "." ]; then
-                    info "Remuxing $file_path (bitrate: ${source_bitrate_mbps} Mbps, within tolerance or below target)"
-                else
-                    info "Remuxing $(basename "$file_path") (bitrate: ${source_bitrate_mbps} Mbps, within tolerance or below target)"
-                fi
+                local needs_transcode=0
                 
-                # Remux to MP4
-                if remux_to_mp4 "$file_path" "$output_file"; then
-                    # Remove original file only if remux succeeded
-                    rm -f "$file_path"
-                    remuxed_count=$((remuxed_count + 1))
-                    if [ "$file_dir" != "." ]; then
-                        info "Remuxed to: $output_file"
+                # Use helper function to handle non-QuickLook format
+                if handle_non_quicklook_at_target "$file_path" "$source_bitrate_mbps" "needs_transcode"; then
+                    if [ "$needs_transcode" -eq 1 ]; then
+                        # Codec is incompatible - transcode instead of remuxing
+                        # Transcode with source bitrate as target (preserve bitrate, improve compatibility)
+                        if transcode_video "$file_path" "$source_bitrate_mbps"; then
+                            # Remove original file only if transcoding succeeded
+                            rm -f "$file_path"
+                            remuxed_count=$((remuxed_count + 1))
+                        else
+                            error "Failed to transcode $file_path. Original file preserved."
+                        fi
                     else
-                        info "Remuxed to: $(basename "$output_file")"
+                        # Remuxing succeeded (handled by helper function)
+                        remuxed_count=$((remuxed_count + 1))
+                        if [ "$file_dir" != "." ]; then
+                            info "Remuxed to: $output_file"
+                        else
+                            info "Remuxed to: $(basename "$output_file")"
+                        fi
                     fi
                 else
-                    error "Failed to remux $file_path. Original file preserved."
+                    error "Failed to handle $file_path. Original file preserved."
                     rm -f "$output_file"  # Clean up partial output
                 fi
             fi
@@ -1136,9 +1210,11 @@ preprocess_non_quicklook_files() {
 }
 
 # Transcode video function
-# Arguments: [video_file] - Optional. If provided, processes that file. Otherwise finds first file in current directory.
+# Arguments: [video_file] [target_bitrate_override_mbps] - Optional. If video_file provided, processes that file. Otherwise finds first file in current directory.
+#            If target_bitrate_override_mbps provided, uses that as target bitrate instead of resolution-based target.
 transcode_video() {
     local provided_file="$1"
+    local target_bitrate_override_mbps="$2"
     
     # Check requirements (only check once, not for each file)
     if [ -z "${REQUIREMENTS_CHECKED:-}" ]; then
@@ -1161,8 +1237,14 @@ transcode_video() {
     
     VIDEO_DURATION=$(get_video_duration "$VIDEO_FILE")
     
-    # Calculate target bitrate
-    calculate_target_bitrate "$RESOLUTION"
+    # Calculate target bitrate (use override if provided, otherwise use resolution-based target)
+    if [ -n "$target_bitrate_override_mbps" ]; then
+        TARGET_BITRATE_MBPS="$target_bitrate_override_mbps"
+        TARGET_BITRATE_BPS=$(printf "%.0f" "$(echo "scale=2; $TARGET_BITRATE_MBPS * 1000000" | bc | tr -d '\n\r')" | tr -d '\n\r')
+        info "Target bitrate (override): ${TARGET_BITRATE_MBPS} Mbps"
+    else
+        calculate_target_bitrate "$RESOLUTION"
+    fi
     
     # Calculate acceptable bitrate range (within 5% of target)
     LOWER_BOUND=$(echo "$TARGET_BITRATE_BPS * 0.95" | bc | tr -d '\n\r')
@@ -1170,6 +1252,9 @@ transcode_video() {
     
     # Check if source video is already within acceptable range or below target
     SOURCE_BITRATE_BPS=$(get_source_bitrate "$VIDEO_FILE" "$VIDEO_DURATION")
+    
+    # Flag to track if we need to transcode due to codec incompatibility
+    local needs_transcode_for_compatibility=0
     
     if [ -n "$SOURCE_BITRATE_BPS" ]; then
         SOURCE_BITRATE_MBPS=$(bps_to_mbps "$SOURCE_BITRATE_BPS")
@@ -1184,21 +1269,20 @@ transcode_video() {
             
             # Check if file needs remuxing to MP4 for QuickLook compatibility
             if is_non_quicklook_format "$VIDEO_FILE"; then
-                local format_name=$(echo "$FILE_EXTENSION" | tr '[:upper:]' '[:lower:]')
-                local format_upper=$(echo "$format_name" | tr '[:lower:]' '[:upper:]')
-                info "File is ${format_upper} format. Remuxing to MP4 with QuickLook compatibility (copying streams, no transcoding)..."
-                
-                # Generate MP4 output filename: {base}.orig.{bitrate}.Mbps.mp4
-                local output_file="${BASE_NAME}.orig.${SOURCE_BITRATE_MBPS}.Mbps.mp4"
-                
-                # Remux to MP4
-                if remux_to_mp4 "$VIDEO_FILE" "$output_file"; then
-                    # Remove original file only if remux succeeded
-                    rm -f "$VIDEO_FILE"
-                    info "Remuxed file to: $output_file"
+                # Use helper function to handle non-QuickLook format
+                if handle_non_quicklook_at_target "$VIDEO_FILE" "$SOURCE_BITRATE_MBPS" "needs_transcode_for_compatibility"; then
+                    # If remuxing succeeded, helper already handled it and we should return early
+                    if [ "$needs_transcode_for_compatibility" -eq 0 ]; then
+                        return 0
+                    fi
+                    # If codec incompatible, set up transcoding with source bitrate
+                    TARGET_BITRATE_MBPS="$SOURCE_BITRATE_MBPS"
+                    TARGET_BITRATE_BPS="$SOURCE_BITRATE_BPS"
+                    LOWER_BOUND=$(echo "$TARGET_BITRATE_BPS * 0.95" | bc | tr -d '\n\r')
+                    UPPER_BOUND=$(echo "$TARGET_BITRATE_BPS * 1.05" | bc | tr -d '\n\r')
+                    # Continue to transcoding section
                 else
-                    error "Failed to remux ${format_upper} file. Original file preserved."
-                    rm -f "$output_file"  # Clean up partial output
+                    # Error handling non-QuickLook format
                     return 1
                 fi
             else
@@ -1210,9 +1294,14 @@ transcode_video() {
                     mv "$VIDEO_FILE" "$renamed_file"
                     info "Renamed file to: $renamed_file"
                 fi
+                return 0
             fi
             
-            return 0
+            # Only return early if we don't need to transcode for compatibility
+            if [ "$needs_transcode_for_compatibility" -eq 0 ]; then
+                return 0
+            fi
+            # Otherwise, fall through to transcoding section below
         fi
         
         # Check if source is already below target (already more compressed than desired)
@@ -1225,21 +1314,20 @@ transcode_video() {
             
             # Check if file needs remuxing to MP4 for QuickLook compatibility
             if is_non_quicklook_format "$VIDEO_FILE"; then
-                local format_name=$(echo "$FILE_EXTENSION" | tr '[:upper:]' '[:lower:]')
-                local format_upper=$(echo "$format_name" | tr '[:lower:]' '[:upper:]')
-                info "File is ${format_upper} format. Remuxing to MP4 with QuickLook compatibility (copying streams, no transcoding)..."
-                
-                # Generate MP4 output filename: {base}.orig.{bitrate}.Mbps.mp4
-                local output_file="${BASE_NAME}.orig.${SOURCE_BITRATE_MBPS}.Mbps.mp4"
-                
-                # Remux to MP4
-                if remux_to_mp4 "$VIDEO_FILE" "$output_file"; then
-                    # Remove original file only if remux succeeded
-                    rm -f "$VIDEO_FILE"
-                    info "Remuxed file to: $output_file"
+                # Use helper function to handle non-QuickLook format
+                if handle_non_quicklook_at_target "$VIDEO_FILE" "$SOURCE_BITRATE_MBPS" "needs_transcode_for_compatibility"; then
+                    # If remuxing succeeded, helper already handled it and we should return early
+                    if [ "$needs_transcode_for_compatibility" -eq 0 ]; then
+                        return 0
+                    fi
+                    # If codec incompatible, set up transcoding with source bitrate
+                    TARGET_BITRATE_MBPS="$SOURCE_BITRATE_MBPS"
+                    TARGET_BITRATE_BPS="$SOURCE_BITRATE_BPS"
+                    LOWER_BOUND=$(echo "$TARGET_BITRATE_BPS * 0.95" | bc | tr -d '\n\r')
+                    UPPER_BOUND=$(echo "$TARGET_BITRATE_BPS * 1.05" | bc | tr -d '\n\r')
+                    # Continue to transcoding section
                 else
-                    error "Failed to remux ${format_upper} file. Original file preserved."
-                    rm -f "$output_file"  # Clean up partial output
+                    # Error handling non-QuickLook format
                     return 1
                 fi
             else
@@ -1251,9 +1339,14 @@ transcode_video() {
                     mv "$VIDEO_FILE" "$renamed_file"
                     info "Renamed file to: $renamed_file"
                 fi
+                return 0
             fi
             
-            return 0
+            # Only return early if we don't need to transcode for compatibility
+            if [ "$needs_transcode_for_compatibility" -eq 0 ]; then
+                return 0
+            fi
+            # Otherwise, fall through to transcoding section below
         fi
     fi
     
@@ -1318,8 +1411,14 @@ transcode_video() {
         fi
     fi
     
-    # Generate final output filename: {base}.fmpg.{actual_bitrate}.Mbps.{ext}
-    OUTPUT_FILE="${BASE_NAME}.fmpg.${actual_bitrate_mbps}.Mbps.${FILE_EXTENSION}"
+    # Generate final output filename
+    # Use .orig. pattern if transcoding for compatibility (source bitrate override), otherwise use .fmpg.
+    # Always use .mp4 extension when transcoding (HEVC in MP4 container)
+    if [ "$needs_transcode_for_compatibility" -eq 1 ]; then
+        OUTPUT_FILE="${BASE_NAME}.orig.${actual_bitrate_mbps}.Mbps.mp4"
+    else
+        OUTPUT_FILE="${BASE_NAME}.fmpg.${actual_bitrate_mbps}.Mbps.mp4"
+    fi
     
     # Rename temporary file to final filename
     mv "$temp_output_file" "$OUTPUT_FILE"
@@ -1330,6 +1429,8 @@ transcode_video() {
     info "Transcoding complete!"
     info "Output file: $OUTPUT_FILE"
     info "Actual bitrate: ${actual_bitrate_mbps} Mbps"
+    
+    return 0
 }
 
 # Main function - processes all video files in current directory

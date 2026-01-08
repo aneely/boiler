@@ -128,8 +128,8 @@ The script is modularized into the following function categories:
 - `preprocess_non_quicklook_files()` - Preprocessing pass that remuxes non-QuickLook compatible files (mkv, wmv, avi, webm, flv) that are within tolerance or below target, including `.orig.` files. Runs before main file discovery to catch files that should be remuxed before skip checks.
 
 **Main Orchestration:**
-- `preprocess_non_quicklook_files()` - Preprocessing pass that remuxes eligible non-QuickLook files before main processing
-- `transcode_video()` - Orchestrates transcoding workflow for a single video file (analysis, optimization, transcoding, second pass if needed)
+- `preprocess_non_quicklook_files()` - Preprocessing pass that remuxes eligible non-QuickLook files before main processing. Automatically transcodes files with incompatible codecs (e.g., WMV3) that are within tolerance or below target, preserving bitrate for QuickLook compatibility
+- `transcode_video()` - Orchestrates transcoding workflow for a single video file (analysis, optimization, transcoding, second pass if needed). Accepts optional `target_bitrate_override_mbps` parameter to override resolution-based target bitrate (useful for compatibility transcoding at source bitrate)
 - `main()` - Orchestrates batch processing: first runs preprocessing, then processes all video files found in current directory and subdirectories
 
 **Signal Handling:**
@@ -296,7 +296,28 @@ The script uses two methods to determine bitrate:
 
 ## Current Session Status
 
-### Latest Session (Preprocessing and Codec Compatibility)
+### Latest Session (WMV Codec Incompatibility Handling)
+
+**WMV Files with Incompatible Codecs:**
+- Added handling for WMV files (and other non-QuickLook formats) that are within target bitrate tolerance or below target but cannot be remuxed due to codec incompatibility (e.g., WMV3)
+- When remuxing fails due to codec incompatibility, the script now automatically transcodes the file to HEVC at the source bitrate (preserving file size while improving compatibility)
+- This ensures QuickLook compatibility without inflating file size, leveraging HEVC's superior compression efficiency (HEVC can maintain similar quality at the same bitrate as older codecs like WMV3)
+- Transcoding uses the `.orig.` naming pattern since the file is already at or below target bitrate
+- Handled in both `preprocess_non_quicklook_files()` and `transcode_video()` for consistency
+
+**Target Bitrate Override Support:**
+- Modified `transcode_video()` to accept an optional `target_bitrate_override_mbps` parameter
+- When provided, uses the override instead of calculating resolution-based target bitrate
+- Enables transcoding to specific bitrates (e.g., source bitrate for compatibility transcoding)
+- Sets up foundation for future command-line argument support (e.g., `--target-bitrate`)
+
+**Testing:**
+- Added tests for codec incompatibility handling in both preprocessing and main transcoding paths
+- Added tests for target bitrate override functionality
+- Total test count: 183 tests (up from 163)
+- All tests passing
+
+### Previous Session (Preprocessing and Codec Compatibility)
 
 **Preprocessing Pass for Non-QuickLook Formats:**
 - Added `preprocess_non_quicklook_files()` function that runs before main file discovery
