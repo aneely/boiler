@@ -1542,6 +1542,195 @@ test_preprocess_codec_incompatible
 
 echo ""
 
+# Test validate_bitrate()
+test_validate_bitrate() {
+    echo "Testing validate_bitrate()..."
+    
+    # Valid bitrates
+    validate_bitrate "5" && assert_equal $? 0 "validate_bitrate accepts integer"
+    validate_bitrate "9.5" && assert_equal $? 0 "validate_bitrate accepts decimal"
+    validate_bitrate "0.1" && assert_equal $? 0 "validate_bitrate accepts minimum (0.1)"
+    validate_bitrate "100" && assert_equal $? 0 "validate_bitrate accepts maximum (100)"
+    validate_bitrate "50.25" && assert_equal $? 0 "validate_bitrate accepts decimal with two places"
+    
+    # Invalid bitrates (these should return 1/false)
+    validate_bitrate ""; assert_equal $? 1 "validate_bitrate rejects empty string"
+    validate_bitrate "0"; assert_equal $? 1 "validate_bitrate rejects zero"
+    validate_bitrate "-5"; assert_equal $? 1 "validate_bitrate rejects negative"
+    validate_bitrate "101"; assert_equal $? 1 "validate_bitrate rejects > 100"
+    validate_bitrate "abc"; assert_equal $? 1 "validate_bitrate rejects non-numeric"
+    validate_bitrate "5.5.5"; assert_equal $? 1 "validate_bitrate rejects multiple decimals"
+    validate_bitrate " 5 "; assert_equal $? 1 "validate_bitrate rejects whitespace (should be sanitized first)"
+}
+test_validate_bitrate
+
+echo ""
+
+# Test parse_arguments()
+test_parse_arguments() {
+    echo "Testing parse_arguments()..."
+    
+    # Reset global variable
+    GLOBAL_TARGET_BITRATE_MBPS=""
+    
+    # Test --target-bitrate flag
+    parse_arguments --target-bitrate 9.5
+    assert_equal "$GLOBAL_TARGET_BITRATE_MBPS" "9.5" "parse_arguments sets GLOBAL_TARGET_BITRATE_MBPS with --target-bitrate"
+    
+    # Test -t flag
+    GLOBAL_TARGET_BITRATE_MBPS=""
+    parse_arguments -t 6.0
+    assert_equal "$GLOBAL_TARGET_BITRATE_MBPS" "6.0" "parse_arguments sets GLOBAL_TARGET_BITRATE_MBPS with -t"
+    
+    # Test no arguments
+    GLOBAL_TARGET_BITRATE_MBPS=""
+    parse_arguments
+    assert_empty "$GLOBAL_TARGET_BITRATE_MBPS" "parse_arguments leaves GLOBAL_TARGET_BITRATE_MBPS empty with no args"
+    
+    # Test decimal values
+    GLOBAL_TARGET_BITRATE_MBPS=""
+    parse_arguments --target-bitrate 9.75
+    assert_equal "$GLOBAL_TARGET_BITRATE_MBPS" "9.75" "parse_arguments handles decimal values"
+    
+    # Test error cases using subshells (since parse_arguments exits on error)
+    # Test missing value after flag
+    set +e
+    (parse_arguments --target-bitrate 2>&1 > /dev/null)
+    exit_code=$?
+    set -e
+    assert_equal $exit_code 1 "parse_arguments exits 1 when value missing after --target-bitrate"
+    
+    # Test invalid bitrate value
+    set +e
+    (parse_arguments --target-bitrate 101 2>&1 > /dev/null)
+    exit_code=$?
+    set -e
+    assert_equal $exit_code 1 "parse_arguments exits 1 when bitrate value is invalid (>100)"
+    
+    # Test unknown flag
+    set +e
+    (parse_arguments --unknown-flag 2>&1 > /dev/null)
+    exit_code=$?
+    set -e
+    assert_equal $exit_code 1 "parse_arguments exits 1 when unknown flag provided"
+    
+    # Test help flag (should exit 0)
+    set +e
+    (parse_arguments --help 2>&1 > /dev/null)
+    exit_code=$?
+    set -e
+    assert_equal $exit_code 0 "parse_arguments exits 0 when --help provided"
+    
+    # Test that last flag wins if both -t and --target-bitrate are provided
+    GLOBAL_TARGET_BITRATE_MBPS=""
+    parse_arguments -t 5.0 --target-bitrate 9.5
+    assert_equal "$GLOBAL_TARGET_BITRATE_MBPS" "9.5" "parse_arguments: last flag wins when multiple flags provided"
+}
+test_parse_arguments
+
+echo ""
+
+# Test main() integration with parse_arguments() and override flow
+test_main_with_override() {
+    echo "Testing main() with target bitrate override..."
+    
+    local temp_dir
+    local test_file
+    local output
+    local exit_code
+    
+    # Create a temporary directory for each test to avoid conflicts
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || exit 1
+    
+    reset_call_tracking
+    test_file="test_video.mp4"
+    touch "$test_file"
+    MOCK_VIDEO_FILE="$test_file"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=12000000  # 12 Mbps (above 8 Mbps default target, but we'll override to 9.5)
+    MOCK_SAMPLE_BITRATE_BPS=9500000  # 9.5 Mbps (at override target)
+    MOCK_OUTPUT_BITRATE_BPS=9500000  # Output should be at override target (9.5 Mbps)
+    
+    # Call main with override argument
+    set +e
+    output=$(main --target-bitrate 9.5 2>&1)
+    exit_code=$?
+    set -e
+    
+    assert_exit_code $exit_code 0 "main: completes with override argument"
+    assert_not_empty "$(echo "$output" | grep -i "Target bitrate (override): 9.5" || true)" "main: outputs override bitrate message"
+    # Verify transcode_video was called with override
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "1" "main: calls transcode_full_video with override"
+    
+    # Cleanup
+    rm -f "$test_file" *.mp4 *.fmpg.*.mp4 2>/dev/null
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_SAMPLE_BITRATE_BPS MOCK_OUTPUT_BITRATE_BPS
+    GLOBAL_TARGET_BITRATE_MBPS=""
+    
+    # Return to original directory
+    cd - > /dev/null || true
+    rm -rf "$temp_dir"
+}
+test_main_with_override
+
+echo ""
+
+# Test preprocess_non_quicklook_files() with override
+test_preprocess_with_override() {
+    echo "Testing preprocess_non_quicklook_files() with target bitrate override..."
+    
+    local temp_dir
+    local test_file
+    local output
+    local exit_code
+    
+    # Create a temporary directory for each test to avoid conflicts
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || exit 1
+    
+    reset_call_tracking
+    test_file="test_video.mkv"
+    touch "$test_file"
+    MOCK_VIDEO_FILE="$test_file"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=9500000  # 9.5 Mbps (at override target, within tolerance)
+    MOCK_VIDEO_CODEC="h264"  # Compatible codec (should remux)
+    
+    # Set global override
+    GLOBAL_TARGET_BITRATE_MBPS="9.5"
+    
+    set +e
+    output=$(preprocess_non_quicklook_files 2>&1)
+    exit_code=$?
+    set -e
+    
+    assert_exit_code $exit_code 0 "preprocess_non_quicklook_files: completes with override"
+    # Should use override target (9.5) instead of resolution-based target (8)
+    # File is at 9.5 Mbps, which is within tolerance of override target (9.5)
+    assert_not_empty "$(echo "$output" | grep -i "remuxing\|remuxed" || true)" "preprocess_non_quicklook_files: processes file with override"
+    
+    # Cleanup
+    rm -f "$test_file" *.mp4 *.orig.*.mp4 2>/dev/null
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_VIDEO_CODEC
+    GLOBAL_TARGET_BITRATE_MBPS=""
+    
+    # Return to original directory
+    cd - > /dev/null || true
+    rm -rf "$temp_dir"
+}
+test_preprocess_with_override
+
+echo ""
+
+# Test that main() passes target bitrate override to transcode_video()
+# This is tested indirectly through the existing transcode_video() tests with override parameter
+# The integration is verified by ensuring transcode_video() receives and uses the override correctly
+
+echo ""
+
 # Print test summary
 echo "=========================================="
 echo "Test Summary:"

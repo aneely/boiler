@@ -57,6 +57,11 @@ brew install bc
    ./boiler.sh
    ```
 
+   Or with a custom target bitrate override:
+   ```bash
+   ./boiler.sh --target-bitrate 9.5
+   ```
+
 3. The script will:
    - Find all video files in the current directory and subdirectories (one level deep)
    - Automatically skip files that are already encoded (contain `.fmpg.`, `.orig.`, or `.hbrk.` markers) or have encoded versions in the same directory
@@ -68,6 +73,16 @@ brew install bc
      - Iteratively find the optimal quality setting by sampling from multiple points (if needed)
      - Transcode the full video
      - Output: `{base}.fmpg.{actual_bitrate}.Mbps.{ext}` (e.g., `video.fmpg.10.25.Mbps.mp4`)
+
+### Command-Line Options
+
+- `-t, --target-bitrate RATE` - Override target bitrate for all files (Mbps)
+  - Example: `./boiler.sh --target-bitrate 9.5`
+  - Applies the specified bitrate to all videos regardless of resolution
+  - Accepts decimal values (e.g., `9.5` for 9.5 Mbps)
+  - Must be between 0.1 and 100 Mbps
+
+- `-h, --help` - Show usage information and exit
 
 ### Example Output
 
@@ -130,7 +145,7 @@ The tool automatically detects these video file extensions:
 
 See [PLAN.md](PLAN.md) for the complete roadmap. Upcoming features include:
 
-- 🎛️ **Command-line options** - Override defaults per-transcode
+- 🎛️ **Enhanced command-line options** - Resolution-specific bitrate overrides (e.g., `-t 2160p=9,1080p=5`), config file support
 - 📊 **Enhanced output modes** - Verbose/quiet modes, dry-run (basic progress indicators already exist)
 - ⚙️ **Configuration system** - Customize default bitrates, codecs, and containers
   - Configurable target bitrates per resolution (2160p, 1080p, 720p, 480p)

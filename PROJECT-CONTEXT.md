@@ -302,7 +302,36 @@ The script uses two methods to determine bitrate:
 
 ## Current Session Status
 
-### Latest Session (WMV Codec Incompatibility Handling)
+### Latest Session (Command-Line Target Bitrate Override)
+
+**Command-Line Argument Support:**
+- Added `--target-bitrate` (or `-t`) flag to override resolution-based target bitrate
+- Accepts decimal values (e.g., `9.5` for 9.5 Mbps)
+- Validates bitrate values (must be between 0.1 and 100 Mbps)
+- Applies override to all files in batch processing
+- Includes `--help` flag for usage information
+
+**Implementation Details:**
+- Added `parse_arguments()` function for command-line parsing
+- Added `validate_bitrate()` helper function for input validation
+- Added `show_usage()` function for help output
+- Updated `main()` to call `parse_arguments()` and pass override to `transcode_video()`
+- Updated `preprocess_non_quicklook_files()` to use global override when set
+- Global variable `GLOBAL_TARGET_BITRATE_MBPS` stores the override value
+
+**Testing:**
+- Added tests for `validate_bitrate()` function (valid and invalid inputs)
+- Added tests for `parse_arguments()` function (flags, error cases, multiple flags)
+- Added integration tests for `main()` with override
+- Added tests for `preprocess_non_quicklook_files()` with override
+- Total test count: 188+ tests (up from 183)
+- All tests passing
+
+**Future Enhancement Path:**
+- Code structure designed to easily extend to resolution-specific overrides (e.g., `-t 2160p=9,1080p=5`)
+- Foundation laid for config file support (`--config bitrates.conf`)
+
+### Previous Session (WMV Codec Incompatibility Handling)
 
 **WMV Files with Incompatible Codecs:**
 - Added handling for WMV files (and other non-QuickLook formats) that are within target bitrate tolerance or below target but cannot be remuxed due to codec incompatibility (e.g., WMV3)

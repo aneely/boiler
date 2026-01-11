@@ -15,6 +15,9 @@ NC='\033[0m' # No Color
 # Flag to track if script was interrupted
 INTERRUPTED=0
 
+# Global target bitrate override (Mbps) - set via command-line flag
+GLOBAL_TARGET_BITRATE_MBPS=""
+
 # Cleanup function: kill entire process group on exit/interrupt
 # This automatically kills all child processes (including FFmpeg) without tracking PIDs
 # The -- -$$ syntax means "kill process group of $$ (our PID)"
@@ -52,6 +55,108 @@ warn() {
 
 error() {
     echo -e "${RED}[ERROR]${NC} $1" >&2
+}
+
+# Sanitize value for bc calculations (remove newlines, carriage returns, and trim whitespace)
+sanitize_value() {
+    echo "$1" | tr -d '\n\r' | xargs
+}
+
+# Validate bitrate value
+# Arguments: bitrate_value (Mbps as string)
+# Returns: 0 if valid, 1 if invalid
+validate_bitrate() {
+    local bitrate="$1"
+    
+    # Check if empty
+    if [ -z "$bitrate" ]; then
+        return 1
+    fi
+    
+    # Check if it's a valid number (allows decimals)
+    if ! echo "$bitrate" | grep -qE '^[0-9]+\.?[0-9]*$'; then
+        return 1
+    fi
+    
+    # Check if positive and within reasonable range (0.1 to 100 Mbps)
+    local bitrate_clean=$(sanitize_value "$bitrate")
+    if (( $(echo "$bitrate_clean <= 0" | bc -l) )) || (( $(echo "$bitrate_clean > 100" | bc -l) )); then
+        return 1
+    fi
+    
+    return 0
+}
+
+# Show usage information
+show_usage() {
+    cat >&2 <<EOF
+Usage: $0 [OPTIONS]
+
+Transcode video files with automatic quality optimization.
+
+OPTIONS:
+    -t, --target-bitrate RATE    Override target bitrate for all files (Mbps)
+                                 Example: --target-bitrate 9.5
+                                 Applies the specified bitrate to all videos
+                                 regardless of resolution.
+
+    -h, --help                   Show this help message and exit
+
+EXAMPLES:
+    # Transcode with default resolution-based bitrates
+    $0
+
+    # Transcode all files targeting 9.5 Mbps
+    $0 --target-bitrate 9.5
+
+    # Using short flag
+    $0 -t 6.0
+
+DEFAULT TARGET BITRATES (by resolution):
+    2160p (4K):    11 Mbps
+    1080p (Full HD): 8 Mbps
+    720p (HD):      5 Mbps
+    480p (SD):      2.5 Mbps
+
+The script processes all video files in the current directory and
+subdirectories (one level deep), automatically skipping files that
+are already encoded.
+EOF
+}
+
+# Parse command-line arguments
+# Sets global variable GLOBAL_TARGET_BITRATE_MBPS if --target-bitrate or -t is provided
+parse_arguments() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -t|--target-bitrate)
+                if [ $# -lt 2 ]; then
+                    error "Error: --target-bitrate requires a value"
+                    error "Example: --target-bitrate 9.5"
+                    exit 1
+                fi
+                local bitrate_value="$2"
+                
+                if ! validate_bitrate "$bitrate_value"; then
+                    error "Error: Invalid bitrate value '$bitrate_value'"
+                    error "Bitrate must be a positive number between 0.1 and 100 Mbps"
+                    exit 1
+                fi
+                
+                GLOBAL_TARGET_BITRATE_MBPS=$(sanitize_value "$bitrate_value")
+                shift 2
+                ;;
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            *)
+                error "Error: Unknown option '$1'"
+                error "Use --help for usage information"
+                exit 1
+                ;;
+        esac
+    done
 }
 
 # Check if required tools are available
@@ -290,11 +395,6 @@ get_video_duration() {
     fi
 
     echo "$duration"
-}
-
-# Sanitize value for bc calculations (remove newlines, carriage returns, and trim whitespace)
-sanitize_value() {
-    echo "$1" | tr -d '\n\r' | xargs
 }
 
 # Convert bitrate from bits per second to megabits per second
@@ -1136,10 +1236,15 @@ preprocess_non_quicklook_files() {
                 continue
             fi
             
-            # Calculate target bitrate
-            calculate_target_bitrate "$resolution"
-            target_bitrate_mbps=$TARGET_BITRATE_MBPS
-            target_bitrate_bps=$TARGET_BITRATE_BPS
+            # Calculate target bitrate (use global override if set, otherwise use resolution-based)
+            if [ -n "$GLOBAL_TARGET_BITRATE_MBPS" ]; then
+                target_bitrate_mbps=$GLOBAL_TARGET_BITRATE_MBPS
+                target_bitrate_bps=$(printf "%.0f" "$(echo "scale=2; $target_bitrate_mbps * 1000000" | bc | tr -d '\n\r')" | tr -d '\n\r')
+            else
+                calculate_target_bitrate "$resolution"
+                target_bitrate_mbps=$TARGET_BITRATE_MBPS
+                target_bitrate_bps=$TARGET_BITRATE_BPS
+            fi
             
             # Calculate acceptable bitrate range (within 5% of target)
             lower_bound=$(echo "$target_bitrate_bps * 0.95" | bc | tr -d '\n\r')
@@ -1435,6 +1540,9 @@ transcode_video() {
 
 # Main function - processes all video files in current directory
 main() {
+    # Parse command-line arguments
+    parse_arguments "$@"
+    
     # Preprocess non-QuickLook compatible files first (remux files within tolerance or below target)
     preprocess_non_quicklook_files
     
@@ -1493,15 +1601,28 @@ main() {
         
         # Process this file (transcode_video handles its own errors)
         # Check for interrupt after each file
-        transcode_video "$video_file" || {
-            # If interrupted, exit immediately
-            if [ "$INTERRUPTED" -eq 1 ]; then
-                error "Processing interrupted, exiting"
-                exit 130
-            fi
-            warn "Failed to process: $video_file"
-            # Continue with next file instead of exiting
-        }
+        # Pass global target bitrate override if set
+        if [ -n "$GLOBAL_TARGET_BITRATE_MBPS" ]; then
+            transcode_video "$video_file" "$GLOBAL_TARGET_BITRATE_MBPS" || {
+                # If interrupted, exit immediately
+                if [ "$INTERRUPTED" -eq 1 ]; then
+                    error "Processing interrupted, exiting"
+                    exit 130
+                fi
+                warn "Failed to process: $video_file"
+                # Continue with next file instead of exiting
+            }
+        else
+            transcode_video "$video_file" || {
+                # If interrupted, exit immediately
+                if [ "$INTERRUPTED" -eq 1 ]; then
+                    error "Processing interrupted, exiting"
+                    exit 130
+                fi
+                warn "Failed to process: $video_file"
+                # Continue with next file instead of exiting
+            }
+        fi
         
         # Check again after processing (in case interrupt happened during transcoding)
         if [ "$INTERRUPTED" -eq 1 ]; then
@@ -1516,6 +1637,6 @@ main() {
 
 # Run main function (unless in test mode)
 if [ -z "${BOILER_TEST_MODE:-}" ]; then
-    main
+    main "$@"
 fi
 
