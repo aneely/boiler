@@ -78,11 +78,33 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] **Skip already optimized files**: Exit early if the source file is already within ±5% of the target bitrate for its resolution. This prevents unnecessary transcoding when the file is already optimized. (Implemented)
 - [x] **MKV remuxing for optimized files**: For MKV files that are already within tolerance or below target bitrate, automatically remux them to MP4 with QuickLook compatibility. This converts the container format without transcoding video/audio streams, improving macOS Finder QuickLook compatibility while preserving quality. Uses `-movflags +faststart` and `-tag:v hvc1` (for HEVC) for optimal QuickLook support. (Implemented)
 - [ ] **Initial pass to identify work**: Perform an initial pass over all discovered video files to capture all potential work and allow short-circuiting logic to filter down to untranscoded files before starting any transcoding. This prevents non-deterministic behavior where a file transcoded close to the target bitrate (but slightly out of tolerance) causes a second run of the script to attempt re-encoding an already good enough encoded file. The initial pass would identify files that are already within tolerance or have encoded versions, ensuring they are properly skipped before any transcoding begins.
+- [ ] **Single-pass remux and transcode**: Ensure that both the remuxing pass and transcoding pass happen in a single script execution, rather than requiring two separate runs. Currently, if a file gets remuxed in the preprocessing pass, it may not be picked up by the main transcoding pass in the same execution, requiring a second run. Implementation considerations:
+  - **Re-scan after preprocessing**: After `preprocess_non_quicklook_files()` completes, re-scan for video files to include newly remuxed MP4 files that may still need transcoding (e.g., files that were remuxed but are above target bitrate)
+  - **Track remuxed files**: Keep track of files that were remuxed during preprocessing and ensure they're included in the main processing pass if they still need transcoding
+  - **File discovery logic**: Ensure `find_all_video_files()` picks up remuxed MP4 files that don't have skip markers (`.fmpg.`, `.orig.`, `.hbrk.`) and are above target bitrate
+  - **Edge cases**: Handle cases where:
+    - A file is remuxed from MKV to MP4 but is still above target bitrate and needs transcoding
+    - A file is remuxed with an `.orig.` marker but the original file still exists and needs transcoding
+    - Multiple files in the same directory where some get remuxed and others need transcoding
+  This would eliminate the need to run the script twice (once for remux, once for transcode) and provide a smoother user experience.
 
 ### Batch Processing
 
 - [x] **Multiple files in current directory**: Process all video files found in the current directory, not just the first one. This allows transcoding multiple videos in a single run. (Implemented)
 - [x] **Subdirectory processing (one level deep)**: Process video files in subdirectories one level deep from the current directory. This enables batch processing of organized video collections. (Implemented)
+- [ ] **Configurable subdirectory depth**: Add support for traversing an arbitrary number of subdirectories with a configurable depth limit. Implementation considerations:
+  - **Default depth**: Keep current default of 2 levels deep (current directory + one subdirectory level) for backward compatibility
+  - **Command-line flag**: Add `-L` or `--max-depth` flag (matching `tree` command convention) to specify maximum directory depth
+  - **Unlimited depth**: Support `-L 0` or `--max-depth 0` to traverse all subdirectories without limit (full recursive search)
+  - **Usage examples**:
+    - `./boiler.sh` - Default behavior (2 levels deep)
+    - `./boiler.sh -L 1` - Current directory only (no subdirectories)
+    - `./boiler.sh -L 3` - Three levels deep
+    - `./boiler.sh -L 0` - Unlimited depth (full recursive)
+  - **Implementation locations**: Update `find_all_video_files()`, `find_skipped_video_files()`, and `preprocess_non_quicklook_files()` to use configurable depth instead of hardcoded `-maxdepth 2`
+  - **Validation**: Ensure depth value is a non-negative integer
+  - **Documentation**: Update help text and README to explain the depth flag
+  This would provide flexibility for users with deeply nested directory structures while maintaining the current default behavior.
 - [ ] **Predictable file processing order**: Iterate over files in a predictable order (e.g., alphabetical) to ensure consistent behavior across runs and make batch processing more deterministic.
 
 ### File Detection and Naming
@@ -105,6 +127,52 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [ ] **SDR vs HDR bitrate differentiation**: Detect video dynamic range (Standard Dynamic Range vs. High Dynamic Range) and apply different target bitrates accordingly. HDR content typically requires higher bitrates (e.g., 6.5 Mbps for 720p HDR vs. 5 Mbps for 720p SDR, 35-45 Mbps for 4K HDR vs. current 11 Mbps for 4K SDR) to maintain quality due to increased color depth and brightness range. This would improve quality for HDR content while keeping file sizes reasonable for SDR content.
 - [ ] **Configurable constant quality start ranges**: Allow users to specify custom starting quality values or ranges for the optimization loop, rather than always starting at a fixed value (currently 52). This would help optimize for different use cases or content types.
 - [ ] **Configurable sample duration**: Make the sample duration configurable. Currently set to 60 seconds per sample. Longer samples provide more accurate bitrate predictions but take longer to process. Could be made user-configurable or further optimized based on video duration/complexity.
+- [ ] **Historical logging and optimization analysis**: Implement a logging mechanism to track transcoding sessions for historical analysis and optimization opportunities. Logging should capture:
+  - **File metadata**: File sizes, codecs, source bitrates, resolutions, durations
+  - **Estimation attempts**: All iterative quality optimization attempts (quality values tested, resulting bitrates, convergence behavior, number of iterations)
+  - **Transcode attempts**: All transcoding passes (first pass, second pass, third pass if needed) with quality values, target bitrates, actual bitrates, and outcomes
+  - **Optimization insights**: Track patterns such as:
+    - Whether quality tends to trend upward or downward from starting value (currently 52)
+    - Optimal starting quality values for different content types/resolutions
+    - Effectiveness of proportional adjustment algorithm
+    - Sample-based prediction accuracy vs. full video results
+    - Second/third pass success rates and adjustment effectiveness
+  - **Storage format**: Structured data (e.g., JSON, CSV, or SQLite) that can be easily analyzed and queried
+  - **Analysis tools**: Scripts or tools to analyze historical data to answer questions like:
+    - Should we start at a different quality value (e.g., 55 or 60 instead of 52)?
+    - Do certain content types consistently require more iterations?
+    - Is the proportional adjustment algorithm working well, or should we adjust min/max step sizes?
+    - Are there patterns in overcorrection that could be addressed?
+  This would enable data-driven optimization of the transcoding algorithm based on real-world usage patterns.
+
+### Process Control
+
+- [ ] **Suspend/Resume functionality**: Add support for suspending and resuming the transcoding process without terminating it. This would allow users to temporarily pause long-running transcoding jobs to free up system resources, then resume them later without losing progress. Implementation considerations:
+  - **Signal handling**: Add signal handlers for `SIGTSTP` (Ctrl+Z, suspend) and `SIGCONT` (resume)
+  - **Process group management**: When suspending, also suspend all child processes (FFmpeg) in the process group using `kill -STOP -- -$$`. When resuming, resume them with `kill -CONT -- -$$`
+  - **State preservation**: The script already uses process groups (`kill -- -$$`), so child processes will automatically suspend/resume with the parent
+  - **User feedback**: Provide clear messages when suspended/resumed (e.g., "Process suspended (Ctrl+Z). Use 'kill -CONT <PID>' to resume.")
+  - **Usage patterns**:
+    - Interactive shell: `Ctrl+Z` automatically sends `SIGTSTP`, can resume with `fg` or `kill -CONT %1`
+    - Background process: Use `kill -STOP <PID>` to suspend, `kill -CONT <PID>` to resume
+    - Process state: Suspended processes show as "T" (stopped) in `ps` output
+  - **I/O considerations**: Suspending mid-transcode will pause FFmpeg operations. When resumed, transcoding continues from where it left off (no data loss, but may cause slight quality artifacts at the suspend/resume boundary depending on encoding state)
+  - **Implementation example**:
+    ```bash
+    handle_suspend() {
+        info "Process suspended (Ctrl+Z). Use 'kill -CONT $$' to resume."
+        kill -STOP -- -$$ 2>/dev/null || true  # Suspend child processes
+    }
+    
+    handle_resume() {
+        info "Process resumed."
+        kill -CONT -- -$$ 2>/dev/null || true  # Resume child processes
+    }
+    
+    trap handle_suspend TSTP  # Ctrl+Z
+    trap handle_resume CONT    # Resume signal
+    ```
+  This would be particularly useful for long-running batch transcoding jobs where users might want to temporarily pause processing to use system resources for other tasks.
 
 ### Development Workflow
 

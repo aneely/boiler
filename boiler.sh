@@ -1059,6 +1059,46 @@ calculate_adjusted_quality() {
     echo "$current_quality"
 }
 
+# Calculate quality using linear interpolation between two known points
+# Arguments: quality1, bitrate1_bps, quality2, bitrate2_bps, target_bitrate_bps
+# Returns: interpolated quality value
+# Uses linear interpolation: quality = quality2 + (quality1 - quality2) * (target - bitrate2) / (bitrate1 - bitrate2)
+calculate_interpolated_quality() {
+    local quality1=$(sanitize_value "$1")
+    local bitrate1_bps=$(sanitize_value "$2")
+    local quality2=$(sanitize_value "$3")
+    local bitrate2_bps=$(sanitize_value "$4")
+    local target_bitrate_bps=$(sanitize_value "$5")
+    
+    # Calculate the difference in bitrates
+    local bitrate_diff=$(echo "scale=4; $bitrate1_bps - $bitrate2_bps" | bc | tr -d '\n\r')
+    
+    # Check if bitrates are too close (would cause division by zero or unstable interpolation)
+    # If bitrate difference is less than 1% of target, fall back to simple adjustment
+    local min_diff=$(echo "scale=0; $target_bitrate_bps * 0.01" | bc | tr -d '\n\r')
+    if (( $(echo "$bitrate_diff < $min_diff" | bc -l) )) && (( $(echo "$bitrate_diff > -$min_diff" | bc -l) )); then
+        # Bitrates too close, use midpoint quality
+        local interpolated_quality=$(echo "scale=4; ($quality1 + $quality2) / 2" | bc | tr -d '\n\r')
+        interpolated_quality=$(printf "%.0f" "$interpolated_quality" | tr -d '\n\r' | xargs)
+    else
+        # Calculate interpolation: quality = quality2 + (quality1 - quality2) * (target - bitrate2) / (bitrate1 - bitrate2)
+        local quality_diff=$(echo "scale=4; $quality1 - $quality2" | bc | tr -d '\n\r')
+        local target_diff=$(echo "scale=4; $target_bitrate_bps - $bitrate2_bps" | bc | tr -d '\n\r')
+        local ratio=$(echo "scale=4; $target_diff / $bitrate_diff" | bc | tr -d '\n\r')
+        local interpolated_quality_float=$(echo "scale=4; $quality2 + $quality_diff * $ratio" | bc | tr -d '\n\r')
+        interpolated_quality=$(printf "%.0f" "$interpolated_quality_float" | tr -d '\n\r' | xargs)
+    fi
+    
+    # Clamp to valid range [0, 100]
+    if [ "$interpolated_quality" -lt 0 ]; then
+        interpolated_quality=0
+    elif [ "$interpolated_quality" -gt 100 ]; then
+        interpolated_quality=100
+    fi
+    
+    echo "$interpolated_quality"
+}
+
 # Transcode full video with optimal settings
 transcode_full_video() {
     local video_file="$1"
@@ -1486,6 +1526,10 @@ transcode_video() {
     if ! is_within_tolerance "$actual_bitrate_bps" "$LOWER_BOUND" "$UPPER_BOUND"; then
         warn "First pass bitrate (${actual_bitrate_mbps} Mbps) is outside tolerance range. Performing second pass with adjusted quality..."
         
+        # Store first pass data for potential interpolation
+        local first_pass_quality=$OPTIMAL_QUALITY
+        local first_pass_bitrate_bps=$actual_bitrate_bps
+        
         # Calculate adjusted quality value based on actual vs target bitrate
         local adjusted_quality=$(calculate_adjusted_quality "$OPTIMAL_QUALITY" "$actual_bitrate_bps" "$TARGET_BITRATE_BPS")
         local target_bitrate_mbps=$(bps_to_mbps "$TARGET_BITRATE_BPS")
@@ -1498,21 +1542,54 @@ transcode_video() {
         transcode_full_video "$VIDEO_FILE" "$temp_output_file" "$adjusted_quality"
         
         # Measure actual bitrate of second pass
-        actual_bitrate_bps=$(measure_bitrate "$temp_output_file" "$VIDEO_DURATION")
-        if [ -z "$actual_bitrate_bps" ]; then
+        local second_pass_bitrate_bps=$(measure_bitrate "$temp_output_file" "$VIDEO_DURATION")
+        if [ -z "$second_pass_bitrate_bps" ]; then
             error "Could not measure bitrate of second pass transcoded file"
             rm -f "$temp_output_file"
             return 1
         fi
         
         # Recalculate actual bitrate in Mbps
-        actual_bitrate_mbps=$(bps_to_mbps "$actual_bitrate_bps")
+        local second_pass_bitrate_mbps=$(bps_to_mbps "$second_pass_bitrate_bps")
         
-        # Check if second pass is within tolerance (informational only - we'll use this result regardless)
-        if is_within_tolerance "$actual_bitrate_bps" "$LOWER_BOUND" "$UPPER_BOUND"; then
-            info "Second pass bitrate (${actual_bitrate_mbps} Mbps) is within tolerance range"
+        # Check if second pass is within tolerance
+        if is_within_tolerance "$second_pass_bitrate_bps" "$LOWER_BOUND" "$UPPER_BOUND"; then
+            info "Second pass bitrate (${second_pass_bitrate_mbps} Mbps) is within tolerance range"
+            actual_bitrate_bps=$second_pass_bitrate_bps
+            actual_bitrate_mbps=$second_pass_bitrate_mbps
         else
-            warn "Second pass bitrate (${actual_bitrate_mbps} Mbps) is still outside tolerance range, but using this result"
+            # Second pass still out of range - use linear interpolation between the two known points
+            warn "Second pass bitrate (${second_pass_bitrate_mbps} Mbps) is still outside tolerance range. Performing third pass with interpolated quality..."
+            
+            # Use linear interpolation: we have (quality1, bitrate1) and (quality2, bitrate2)
+            # Interpolate to find quality that should give us target bitrate
+            local interpolated_quality=$(calculate_interpolated_quality "$first_pass_quality" "$first_pass_bitrate_bps" "$adjusted_quality" "$second_pass_bitrate_bps" "$TARGET_BITRATE_BPS")
+            local first_pass_bitrate_mbps=$(bps_to_mbps "$first_pass_bitrate_bps")
+            info "Interpolating quality from first pass (${first_pass_quality} → ${first_pass_bitrate_mbps} Mbps) and second pass (${adjusted_quality} → ${second_pass_bitrate_mbps} Mbps) to ${interpolated_quality} for target (${target_bitrate_mbps} Mbps)"
+            
+            # Remove second pass temporary file
+            rm -f "$temp_output_file"
+            
+            # Transcode with interpolated quality
+            transcode_full_video "$VIDEO_FILE" "$temp_output_file" "$interpolated_quality"
+            
+            # Measure actual bitrate of third pass
+            actual_bitrate_bps=$(measure_bitrate "$temp_output_file" "$VIDEO_DURATION")
+            if [ -z "$actual_bitrate_bps" ]; then
+                error "Could not measure bitrate of third pass transcoded file"
+                rm -f "$temp_output_file"
+                return 1
+            fi
+            
+            # Recalculate actual bitrate in Mbps
+            actual_bitrate_mbps=$(bps_to_mbps "$actual_bitrate_bps")
+            
+            # Check if third pass is within tolerance (informational only - we'll use this result regardless)
+            if is_within_tolerance "$actual_bitrate_bps" "$LOWER_BOUND" "$UPPER_BOUND"; then
+                info "Third pass bitrate (${actual_bitrate_mbps} Mbps) is within tolerance range"
+            else
+                warn "Third pass bitrate (${actual_bitrate_mbps} Mbps) is still outside tolerance range, but using this result"
+            fi
         fi
     fi
     

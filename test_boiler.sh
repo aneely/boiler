@@ -213,6 +213,12 @@ measure_bitrate() {
         # Count how many times we've measured temp_transcode files
         local temp_transcode_count=$(grep -c "temp_transcode" "$MEASURE_BITRATE_CALLS_FILE" 2>/dev/null || echo "0")
         
+        # If MOCK_THIRD_PASS_BITRATE_BPS is set and this is the third call, use it
+        if [ "$temp_transcode_count" -eq 3 ] && [ -n "${MOCK_THIRD_PASS_BITRATE_BPS:-}" ]; then
+            echo "${MOCK_THIRD_PASS_BITRATE_BPS}"
+            return
+        fi
+        
         # If MOCK_SECOND_PASS_BITRATE_BPS is set and this is the second call, use it
         if [ "$temp_transcode_count" -eq 2 ] && [ -n "${MOCK_SECOND_PASS_BITRATE_BPS:-}" ]; then
             echo "${MOCK_SECOND_PASS_BITRATE_BPS}"
@@ -1047,6 +1053,92 @@ test_calculate_adjusted_quality
 
 echo ""
 
+echo "Testing calculate_interpolated_quality()..."
+test_calculate_interpolated_quality() {
+    local result
+    
+    # Test: Normal interpolation case
+    # First pass: quality 79 → 14.05 Mbps, Second pass: quality 73 → 7.71 Mbps, Target: 9.00 Mbps
+    # Expected: Interpolated quality should be between 73 and 79, closer to 73 since 9.00 is closer to 7.71
+    result=$(calculate_interpolated_quality "79" "14050000" "73" "7710000" "9000000")
+    # ratio = (9.0 - 7.71) / (14.05 - 7.71) = 1.29 / 6.34 ≈ 0.203
+    # quality = 73 + (79 - 73) * 0.203 = 73 + 6 * 0.203 = 73 + 1.218 ≈ 74
+    if [ "$result" -ge 73 ] && [ "$result" -le 79 ]; then
+        assert_equal "1" "1" "calculate_interpolated_quality: interpolated quality is between the two points"
+    else
+        assert_equal "between" "outside" "calculate_interpolated_quality: should be between 73 and 79"
+    fi
+    # Should be closer to 73 (lower quality) since target is closer to second pass bitrate
+    if [ "$result" -lt 76 ]; then
+        assert_equal "1" "1" "calculate_interpolated_quality: interpolated quality is closer to lower quality point"
+    else
+        assert_equal "closer_to_lower" "closer_to_higher" "calculate_interpolated_quality: should be closer to 73 than 79"
+    fi
+    
+    # Test: Target exactly at first pass bitrate
+    # First pass: quality 80 → 10 Mbps, Second pass: quality 70 → 8 Mbps, Target: 10 Mbps
+    result=$(calculate_interpolated_quality "80" "10000000" "70" "8000000" "10000000")
+    # ratio = (10 - 8) / (10 - 8) = 2 / 2 = 1.0
+    # quality = 70 + (80 - 70) * 1.0 = 70 + 10 = 80
+    assert_equal "$result" "80" "calculate_interpolated_quality: target at first pass bitrate returns first pass quality"
+    
+    # Test: Target exactly at second pass bitrate
+    # First pass: quality 80 → 10 Mbps, Second pass: quality 70 → 8 Mbps, Target: 8 Mbps
+    result=$(calculate_interpolated_quality "80" "10000000" "70" "8000000" "8000000")
+    # ratio = (8 - 8) / (10 - 8) = 0 / 2 = 0
+    # quality = 70 + (80 - 70) * 0 = 70
+    assert_equal "$result" "70" "calculate_interpolated_quality: target at second pass bitrate returns second pass quality"
+    
+    # Test: Target between the two points (midpoint case)
+    # First pass: quality 80 → 10 Mbps, Second pass: quality 70 → 8 Mbps, Target: 9 Mbps (midpoint)
+    result=$(calculate_interpolated_quality "80" "10000000" "70" "8000000" "9000000")
+    # ratio = (9 - 8) / (10 - 8) = 1 / 2 = 0.5
+    # quality = 70 + (80 - 70) * 0.5 = 70 + 10 * 0.5 = 70 + 5 = 75
+    assert_equal "$result" "75" "calculate_interpolated_quality: target at midpoint returns midpoint quality"
+    
+    # Test: Edge case - bitrates too close (should use midpoint)
+    # First pass: quality 80 → 9.01 Mbps, Second pass: quality 70 → 9.00 Mbps, Target: 9.00 Mbps
+    # Bitrate difference is 0.01 Mbps, which is less than 1% of 9.00 Mbps (0.09 Mbps)
+    result=$(calculate_interpolated_quality "80" "9010000" "70" "9000000" "9000000")
+    # Should use midpoint: (80 + 70) / 2 = 75
+    assert_equal "$result" "75" "calculate_interpolated_quality: bitrates too close uses midpoint"
+    
+    # Test: Quality clamping at upper bound (100)
+    # First pass: quality 95 → 15 Mbps, Second pass: quality 90 → 10 Mbps, Target: 20 Mbps (extrapolation)
+    result=$(calculate_interpolated_quality "95" "15000000" "90" "10000000" "20000000")
+    # ratio = (20 - 10) / (15 - 10) = 10 / 5 = 2.0
+    # quality = 90 + (95 - 90) * 2.0 = 90 + 10 = 100 (should clamp)
+    assert_equal "$result" "100" "calculate_interpolated_quality: clamps quality at 100 when extrapolation exceeds upper bound"
+    
+    # Test: Quality clamping at lower bound (0)
+    # First pass: quality 10 → 10 Mbps, Second pass: quality 5 → 8 Mbps, Target: 5 Mbps (extrapolation below)
+    result=$(calculate_interpolated_quality "10" "10000000" "5" "8000000" "5000000")
+    # ratio = (5 - 8) / (10 - 8) = -3 / 2 = -1.5
+    # quality = 5 + (10 - 5) * (-1.5) = 5 - 7.5 = -2.5 (should clamp to 0)
+    assert_equal "$result" "0" "calculate_interpolated_quality: clamps quality at 0 when extrapolation goes below lower bound"
+    
+    # Test: Reverse order (first pass has lower quality than second pass - shouldn't happen in practice but test it)
+    # First pass: quality 70 → 8 Mbps, Second pass: quality 80 → 10 Mbps, Target: 9 Mbps
+    result=$(calculate_interpolated_quality "70" "8000000" "80" "10000000" "9000000")
+    # ratio = (9 - 10) / (8 - 10) = -1 / -2 = 0.5
+    # quality = 80 + (70 - 80) * 0.5 = 80 - 5 = 75
+    assert_equal "$result" "75" "calculate_interpolated_quality: handles reverse quality order correctly"
+    
+    # Test: Very small quality difference
+    # First pass: quality 52 → 9.1 Mbps, Second pass: quality 51 → 8.9 Mbps, Target: 9.0 Mbps
+    result=$(calculate_interpolated_quality "52" "9100000" "51" "8900000" "9000000")
+    # ratio = (9.0 - 8.9) / (9.1 - 8.9) = 0.1 / 0.2 = 0.5
+    # quality = 51 + (52 - 51) * 0.5 = 51 + 0.5 = 51.5 ≈ 52 (rounded)
+    if [ "$result" -ge 51 ] && [ "$result" -le 52 ]; then
+        assert_equal "1" "1" "calculate_interpolated_quality: handles small quality differences correctly"
+    else
+        assert_equal "51-52" "$result" "calculate_interpolated_quality: should be 51 or 52 for small difference"
+    fi
+}
+test_calculate_interpolated_quality
+
+echo ""
+
 # Test error handling for critical functions
 echo "Testing error handling for critical functions..."
 test_error_handling() {
@@ -1121,6 +1213,12 @@ test_error_handling() {
         if [[ "$file_path" == *"temp_transcode"* ]] && [ -n "${MOCK_OUTPUT_BITRATE_BPS:-}" ]; then
             # Count how many times we've measured temp_transcode files
             local temp_transcode_count=$(grep -c "temp_transcode" "$MEASURE_BITRATE_CALLS_FILE" 2>/dev/null || echo "0")
+            
+            # If MOCK_THIRD_PASS_BITRATE_BPS is set and this is the third call, use it
+            if [ "$temp_transcode_count" -eq 3 ] && [ -n "${MOCK_THIRD_PASS_BITRATE_BPS:-}" ]; then
+                echo "${MOCK_THIRD_PASS_BITRATE_BPS}"
+                return
+            fi
             
             # If MOCK_SECOND_PASS_BITRATE_BPS is set and this is the second call, use it
             if [ "$temp_transcode_count" -eq 2 ] && [ -n "${MOCK_SECOND_PASS_BITRATE_BPS:-}" ]; then
@@ -1324,6 +1422,41 @@ test_main() {
     # Cleanup
     rm -f "$test_file" *.mp4 *.fmpg.*.mp4 2>/dev/null
     unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_SAMPLE_BITRATE_BPS MOCK_OUTPUT_BITRATE_BPS MOCK_SECOND_PASS_BITRATE_BPS
+    
+    # Test 5: Third pass with interpolation when second pass is still outside tolerance
+    reset_call_tracking
+    test_file="test_video.mp4"
+    touch "$test_file"
+    MOCK_VIDEO_FILE="$test_file"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=12000000  # 12 Mbps (above 8 Mbps target, needs transcoding)
+    MOCK_SAMPLE_BITRATE_BPS=8000000  # Sample bitrate at target (8 Mbps) so optimization converges immediately
+    MOCK_OUTPUT_BITRATE_BPS=14050000  # First pass: 14.05 Mbps (75.6% above target, outside ±5% tolerance)
+    MOCK_SECOND_PASS_BITRATE_BPS=7500000  # Second pass: 7.5 Mbps (6.25% below target, still outside ±5% tolerance - lower bound is 7.6 Mbps)
+    MOCK_THIRD_PASS_BITRATE_BPS=9000000  # Third pass: 9.00 Mbps (12.5% above target, but we'll use it)
+    
+    set +e
+    output=$(main 2>&1)
+    exit_code=$?
+    set -e
+    
+    assert_exit_code $exit_code 0 "main: completes transcoding with third pass"
+    assert_not_empty "$(echo "$output" | grep -i "second pass" || true)" "main: outputs second pass message"
+    assert_not_empty "$(echo "$output" | grep -i "Performing third\|Interpolating quality\|third pass" || true)" "main: outputs third pass or interpolation message"
+    assert_not_empty "$(echo "$output" | grep -i "outside tolerance" || true)" "main: outputs outside tolerance warning"
+    # Verify find_all_video_files was called
+    assert_equal "$(count_calls "$FIND_ALL_VIDEO_FILES_CALLS_FILE")" "1" "main: calls find_all_video_files"
+    # Verify measure_bitrate was called (1 for source + 3 for samples + 3 for output passes = 7)
+    assert_equal "$(count_calls "$MEASURE_BITRATE_CALLS_FILE")" "7" "main: calls measure_bitrate (source + samples + 3 output passes)"
+    # Verify transcode_sample was called (for finding optimal quality - 3 samples for 300s video)
+    assert_equal "$(count_calls "$TRANSCODE_SAMPLE_CALLS_FILE")" "3" "main: calls transcode_sample for optimization (3 samples for 300s video)"
+    # Verify transcode_full_video was called three times (first pass + second pass + third pass)
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "3" "main: calls transcode_full_video three times (first pass + second pass + third pass)"
+    
+    # Cleanup
+    rm -f "$test_file" *.mp4 *.fmpg.*.mp4 2>/dev/null
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_SAMPLE_BITRATE_BPS MOCK_OUTPUT_BITRATE_BPS MOCK_SECOND_PASS_BITRATE_BPS MOCK_THIRD_PASS_BITRATE_BPS
     
     # Return to original directory
     cd - > /dev/null || true

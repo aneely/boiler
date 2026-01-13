@@ -119,6 +119,7 @@ The script follows a modular architecture with focused functions for each step:
    - Continues until convergence, oscillation detection, or quality bounds reached
 6. **Encoding**: Transcodes the full video using the optimal quality setting
 7. **Second pass** (if needed): If the first pass bitrate is outside tolerance, automatically performs a second transcoding pass with an adjusted quality value to get closer to the target bitrate
+8. **Third pass with interpolation** (if needed): If the second pass bitrate is still outside tolerance, automatically performs a third transcoding pass using linear interpolation between the first and second pass data points to calculate a more accurate quality value, addressing overcorrection issues
 
 The script is organized into modular functions for maintainability and clarity. All values are sanitized to prevent calculation errors, and logging output is properly separated from function return values. The codebase has been refactored to eliminate duplication with shared helper functions for bitrate measurement, tolerance checking, and value sanitization.
 
@@ -189,7 +190,7 @@ For testing and development, helper scripts are available:
 
 ### Running Tests
 
-The project includes a comprehensive test suite (`test_boiler.sh`) with 183 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full integration tests (including second pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` unit tests, codec compatibility checking, and error handling tests). The test suite uses function mocking to avoid requiring actual video files or FFmpeg installation, making it suitable for CI/CD environments.
+The project includes a comprehensive test suite (`test_boiler.sh`) with 183+ tests covering utility functions, mocked FFmpeg/ffprobe functions, and full integration tests (including second and third pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` and `calculate_interpolated_quality()` unit tests, codec compatibility checking, and error handling tests). The test suite uses function mocking to avoid requiring actual video files or FFmpeg installation, making it suitable for CI/CD environments.
 
 To run the test suite:
 ```bash
@@ -212,7 +213,7 @@ The script is organized into modular functions for better maintainability:
 
 - **Utility functions**: Video discovery, resolution/duration detection, requirement checking
 - **Configuration functions**: Target bitrate calculation, sample point calculation
-- **Transcoding functions**: Sample transcoding, bitrate measurement, optimization loop, full video transcoding
+- **Transcoding functions**: Sample transcoding, bitrate measurement, optimization loop, full video transcoding, quality adjustment and interpolation
 - **Main orchestration**: The `main()` function coordinates all steps
 
 This modular structure makes the code easier to understand, test, and maintain. For detailed technical information, see [PROJECT-CONTEXT.md](PROJECT-CONTEXT.md).

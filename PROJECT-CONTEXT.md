@@ -85,6 +85,7 @@ The tool is implemented as a modular bash script (`boiler.sh`) organized into fo
 6. **Iteratively finds optimal quality setting** using constant quality mode (`-q:v`) by transcoding samples from multiple points and adjusting quality to hit target bitrate
 7. **Transcodes the full video** using the optimal quality setting
 8. **Performs second pass if needed** - If the first pass bitrate is outside tolerance, automatically performs a second transcoding pass with an adjusted quality value calculated using the same proportional adjustment algorithm
+9. **Performs third pass with interpolation if needed** - If the second pass bitrate is still outside tolerance, automatically performs a third transcoding pass using linear interpolation between the first and second pass data points to calculate a more accurate quality value, addressing overcorrection issues
 
 #### Code Organization
 
@@ -122,6 +123,7 @@ The script is modularized into the following function categories:
 - `measure_sample_bitrate()` - Measures actual bitrate from a sample file (wrapper around `measure_bitrate()`)
 - `find_optimal_quality()` - Main optimization loop that iteratively finds optimal quality setting by adjusting `-q:v` to hit target bitrate
 - `calculate_adjusted_quality()` - Calculates adjusted quality value based on actual vs target bitrate using proportional adjustment algorithm
+- `calculate_interpolated_quality()` - Calculates quality value using linear interpolation between two known (quality, bitrate) points to address overcorrection in second pass
 - `transcode_full_video()` - Transcodes the complete video with optimal quality setting
 - `remux_to_mp4()` - Remuxes non-QuickLook compatible video files to MP4 with QuickLook compatibility (copies streams without transcoding, checks codec compatibility first)
 - `remux_mkv_to_mp4()` - Backward compatibility alias for `remux_to_mp4()`
@@ -133,7 +135,7 @@ The script is modularized into the following function categories:
 
 **Main Orchestration:**
 - `preprocess_non_quicklook_files()` - Preprocessing pass that remuxes eligible non-QuickLook files before main processing. Automatically transcodes files with incompatible codecs (e.g., WMV3) that are within tolerance or below target, preserving bitrate for QuickLook compatibility
-- `transcode_video()` - Orchestrates transcoding workflow for a single video file (analysis, optimization, transcoding, second pass if needed). Accepts optional `target_bitrate_override_mbps` parameter to override resolution-based target bitrate (useful for compatibility transcoding at source bitrate)
+- `transcode_video()` - Orchestrates transcoding workflow for a single video file (analysis, optimization, transcoding, second pass if needed, third pass with interpolation if needed). Accepts optional `target_bitrate_override_mbps` parameter to override resolution-based target bitrate (useful for compatibility transcoding at source bitrate)
 - `main()` - Orchestrates batch processing: first runs preprocessing, then processes all video files found in current directory and subdirectories
 
 **Signal Handling:**
@@ -195,7 +197,8 @@ The script uses an iterative approach to find the optimal quality setting using 
 6. **Convergence**: Stops when actual bitrate is within ±5% of target
 7. **Oscillation detection**: Detects when the algorithm is cycling between quality values (e.g., 60 ↔ 61 ↔ 62) and breaks the loop by selecting the quality value that produces bitrate closest to target. Handles both 2-value oscillations and 3-value cycles.
 8. **No iteration limit**: Loop continues indefinitely until convergence, oscillation detection, or quality bounds are reached
-9. **Second pass transcoding**: After the full video is transcoded with the optimal quality setting, if the resulting bitrate is outside the ±5% tolerance range, automatically performs a second transcoding pass. The second pass uses `calculate_adjusted_quality()` to compute an adjusted quality value based on the actual bitrate from the first pass, using the same proportional adjustment algorithm. This ensures the final output gets as close to the target bitrate as possible, even if sample-based optimization didn't perfectly predict the full video bitrate.
+9. **Second pass transcoding**: After the full video is transcoded with the optimal quality setting, if the resulting bitrate is outside the ±5% tolerance range, automatically performs a second transcoding pass. The second pass uses `calculate_adjusted_quality()` to compute an adjusted quality value based on the actual bitrate from the first pass, using the same proportional adjustment algorithm.
+10. **Third pass with linear interpolation**: If the second pass bitrate is still outside tolerance, automatically performs a third transcoding pass using `calculate_interpolated_quality()`. This function uses linear interpolation between the two known data points (first pass: quality1 → bitrate1, second pass: quality2 → bitrate2) to calculate a more accurate quality value for the target bitrate. This addresses overcorrection issues where the proportional adjustment algorithm overcorrects due to the non-linear relationship between quality values and bitrates in VideoToolbox encoding. The interpolation formula: `quality = quality2 + (quality1 - quality2) * (target - bitrate2) / (bitrate1 - bitrate2)`. This ensures the final output gets as close to the target bitrate as possible, even if sample-based optimization and the second pass didn't perfectly predict the full video bitrate.
 
 #### Encoding Settings
 
@@ -211,7 +214,8 @@ The script uses an iterative approach to find the optimal quality setting using 
     - Files already below target bitrate are renamed to include their actual bitrate without transcoding
 - **Platform**: Optimized for macOS Sequoia (hardware acceleration unlocked)
 - **QuickLook compatibility**: Uses `-movflags +faststart` for sample transcoding; both `-movflags +faststart` and `-tag:v hvc1` for final output to ensure macOS Finder QuickLook support
-- **Second pass transcoding**: If the first full video transcoding produces a bitrate outside the ±5% tolerance range, automatically performs a second transcoding pass with an adjusted quality value calculated using the same proportional adjustment algorithm. This ensures the final output is as close to the target bitrate as possible.
+- **Second pass transcoding**: If the first full video transcoding produces a bitrate outside the ±5% tolerance range, automatically performs a second transcoding pass with an adjusted quality value calculated using the same proportional adjustment algorithm.
+- **Third pass with linear interpolation**: If the second pass bitrate is still outside tolerance, automatically performs a third transcoding pass using linear interpolation between the first and second pass data points to calculate a more accurate quality value. This addresses overcorrection issues and ensures the final output is as close to the target bitrate as possible.
 
 ### Dependencies
 
@@ -302,7 +306,22 @@ The script uses two methods to determine bitrate:
 
 ## Current Session Status
 
-### Latest Session (Command-Line Target Bitrate Override)
+### Latest Session (Linear Interpolation for Third Pass)
+
+**Third Pass with Linear Interpolation:**
+- Added `calculate_interpolated_quality()` function that uses linear interpolation between two known data points to calculate a more accurate quality value
+- Addresses overcorrection issue where the proportional adjustment algorithm in the second pass would overcorrect, causing the bitrate to swing from too high to too low (or vice versa)
+- Implementation: When second pass bitrate is still outside tolerance, performs a third pass using interpolation between first pass (quality1 → bitrate1) and second pass (quality2 → bitrate2) to find the quality value that should produce the target bitrate
+- Formula: `quality = quality2 + (quality1 - quality2) * (target - bitrate2) / (bitrate1 - bitrate2)`
+- Handles edge cases: Bitrates too close (uses midpoint), clamps to valid range [0, 100]
+- This ensures the final output gets as close to the target bitrate as possible, even when the quality-to-bitrate relationship is non-linear
+
+**Implementation Details:**
+- Added `calculate_interpolated_quality()` function (lines 1062-1100)
+- Updated `transcode_video()` to store first pass data and perform third pass with interpolation when second pass is still out of tolerance
+- Third pass uses actual data points instead of assuming linear relationship, providing more accurate quality adjustment
+
+### Previous Session (Command-Line Target Bitrate Override)
 
 **Command-Line Argument Support:**
 - Added `--target-bitrate` (or `-t`) flag to override resolution-based target bitrate
