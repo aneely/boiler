@@ -1493,6 +1493,19 @@ transcode_video() {
             fi
             # Otherwise, fall through to transcoding section below
         fi
+        
+        # If we reach here, source is outside tolerance and above target - show why we're transcoding
+        if [ -n "$SOURCE_BITRATE_BPS" ]; then
+            local lower_bound_mbps=$(bps_to_mbps "$LOWER_BOUND")
+            local upper_bound_mbps=$(bps_to_mbps "$UPPER_BOUND")
+            info "Source video bitrate: ${SOURCE_BITRATE_MBPS} Mbps"
+            info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps (acceptable range: ${lower_bound_mbps} - ${upper_bound_mbps} Mbps, ±5%)"
+            if (( $(echo "$(sanitize_value "$SOURCE_BITRATE_BPS") > $UPPER_BOUND" | bc -l) )); then
+                info "Source bitrate is above acceptable range. Transcoding to reduce file size..."
+            else
+                info "Source bitrate is outside acceptable range. Transcoding to optimize..."
+            fi
+        fi
     fi
     
     # Generate temporary output filename for transcoding
