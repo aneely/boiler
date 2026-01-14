@@ -178,7 +178,7 @@ The script is modularized into the following function categories:
 The script uses an iterative approach to find the optimal quality setting using constant quality mode:
 
 1. **Pre-check**: Before starting optimization, checks if source video is already within ±5% of target bitrate OR if source bitrate is below target. If either condition is true, exits early with a message indicating no transcoding is needed.
-2. **Initial quality**: Starts with quality value 52 (VideoToolbox `-q:v` scale: 0-100, higher = higher quality/bitrate)
+2. **Initial quality**: Starts with quality value 60 (VideoToolbox `-q:v` scale: 0-100, higher = higher quality/bitrate)
 3. **Multi-point sampling**: Creates 60-second samples from multiple points in the video:
    - **Videos ≥ 180 seconds**: 3 samples at beginning (~10%), middle (~50%), and end (~90%)
    - **Videos 120-179 seconds**: 2 samples at beginning and end (with 60s spacing)
@@ -434,7 +434,7 @@ The script uses two methods to determine bitrate:
   - Adjustment scales proportionally: larger adjustments when far from target, smaller when close
   - Faster convergence: reduces iterations needed, especially when starting far from target bitrate
 - **Oscillation detection**: Added detection for cycles between quality values (e.g., 60 ↔ 61 ↔ 62) that can occur with tight tolerances. When oscillation is detected, the algorithm selects the quality value that produces bitrate closest to target and breaks the loop, preventing infinite oscillation.
-- Starting quality value: 52 (increased from 30 for faster convergence)
+- Starting quality value: 60 (increased from 52 for faster convergence)
 
 **Sample Duration Improvements:**
 - Increased sample duration from 15 seconds to 60 seconds for better bitrate accuracy

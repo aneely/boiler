@@ -42,7 +42,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 - **Codec**: HEVC (H.265) via `hevc_videotoolbox` (hardware-accelerated)
 - **Quality control**: Constant quality mode (`-q:v`) - Iteratively adjusts quality value (0-100, higher = higher quality/bitrate) to hit target bitrate
-- **Starting quality**: 52
+- **Starting quality**: 60
 - **Quality adjustment**: Proportional adjustment algorithm (minimum step: 1, maximum step: 10) based on distance from target
 - **Container**: MP4
 - **Audio**: Copy (passthrough)
@@ -125,21 +125,21 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] **Command-line bitrate override**: Add command-line argument support (e.g., `--target-bitrate 6.5`) to override the resolution-based target bitrate. The `transcode_video()` function already supports an optional target bitrate override parameter, so this would primarily involve adding argument parsing to the main script entry point. This would enable users to specify custom bitrates for specific transcoding operations without modifying the script. (Implemented - supports `--target-bitrate` and `-t` flags, applies to all files)
 - [ ] **Configurable target bitrates**: Allow users to customize target bitrates per resolution (2160p, 1080p, 720p, 480p) via configuration file or command-line options. This would enable users to adjust bitrates based on their specific quality/file size preferences, storage constraints, or use case requirements (e.g., archival vs. distribution).
 - [ ] **SDR vs HDR bitrate differentiation**: Detect video dynamic range (Standard Dynamic Range vs. High Dynamic Range) and apply different target bitrates accordingly. HDR content typically requires higher bitrates (e.g., 6.5 Mbps for 720p HDR vs. 5 Mbps for 720p SDR, 35-45 Mbps for 4K HDR vs. current 11 Mbps for 4K SDR) to maintain quality due to increased color depth and brightness range. This would improve quality for HDR content while keeping file sizes reasonable for SDR content.
-- [ ] **Configurable constant quality start ranges**: Allow users to specify custom starting quality values or ranges for the optimization loop, rather than always starting at a fixed value (currently 52). This would help optimize for different use cases or content types.
+- [ ] **Configurable constant quality start ranges**: Allow users to specify custom starting quality values or ranges for the optimization loop, rather than always starting at a fixed value (currently 60). This would help optimize for different use cases or content types.
 - [ ] **Configurable sample duration**: Make the sample duration configurable. Currently set to 60 seconds per sample. Longer samples provide more accurate bitrate predictions but take longer to process. Could be made user-configurable or further optimized based on video duration/complexity.
 - [ ] **Historical logging and optimization analysis**: Implement a logging mechanism to track transcoding sessions for historical analysis and optimization opportunities. Logging should capture:
   - **File metadata**: File sizes, codecs, source bitrates, resolutions, durations
   - **Estimation attempts**: All iterative quality optimization attempts (quality values tested, resulting bitrates, convergence behavior, number of iterations)
   - **Transcode attempts**: All transcoding passes (first pass, second pass, third pass if needed) with quality values, target bitrates, actual bitrates, and outcomes
   - **Optimization insights**: Track patterns such as:
-    - Whether quality tends to trend upward or downward from starting value (currently 52)
+    - Whether quality tends to trend upward or downward from starting value (currently 60)
     - Optimal starting quality values for different content types/resolutions
     - Effectiveness of proportional adjustment algorithm
     - Sample-based prediction accuracy vs. full video results
     - Second/third pass success rates and adjustment effectiveness
   - **Storage format**: Structured data (e.g., JSON, CSV, or SQLite) that can be easily analyzed and queried
   - **Analysis tools**: Scripts or tools to analyze historical data to answer questions like:
-    - Should we start at a different quality value (e.g., 55 or 60 instead of 52)?
+    - Should we start at a different quality value (e.g., 55 or 65 instead of 60), perhaps depending on the resolution?
     - Do certain content types consistently require more iterations?
     - Is the proportional adjustment algorithm working well, or should we adjust min/max step sizes?
     - Are there patterns in overcorrection that could be addressed?

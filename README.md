@@ -91,9 +91,9 @@ brew install bc
 [INFO] Video resolution: 2160p
 [INFO] Target bitrate: 11 Mbps (2160p)
 [INFO] Using constant quality mode (-q:v), sampling from multiple points to find optimal quality setting
-[INFO] Iteration 1: Testing with quality=52
+[INFO] Iteration 1: Testing with quality=60
 [INFO] Average bitrate from 3 samples: 12.5 Mbps
-[INFO] Actual bitrate too high, decreasing quality from 52 to 48
+[INFO] Actual bitrate too high, decreasing quality from 60 to 48
 [INFO] Iteration 2: Testing with quality=48
 [INFO] Average bitrate from 3 samples: 10.8 Mbps
 [INFO] Bitrate is within acceptable range (5% of target)

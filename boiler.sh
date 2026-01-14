@@ -796,8 +796,8 @@ find_optimal_quality() {
     local iteration=0
     # Start with a reasonable quality value
     # VideoToolbox -q:v scale: higher value = higher quality = higher bitrate
-    # 52 is a good starting point
-    local test_quality=52
+    # 60 is a good starting point
+    local test_quality=60
     
     # Track previous iterations for oscillation detection (can detect cycles of 2-3 values)
     local prev_quality=""
