@@ -148,8 +148,9 @@ The script is modularized into the following function categories:
 ### Core Components
 
 #### Video Discovery
-- Searches current directory and subdirectories (one level deep) for common video formats: `mp4`, `mkv`, `avi`, `mov`, `m4v`, `webm`, `flv`, `wmv`
+- Searches current directory and subdirectories (default: one level deep, configurable via `-L`/`--max-depth` flag) for common video formats: `mp4`, `mkv`, `avi`, `mov`, `m4v`, `webm`, `flv`, `wmv`
 - Processes all matching video files found (batch processing)
+- Configurable depth: Use `-L 0` for unlimited recursive search, or `-L N` for N levels deep (default: 2)
 - **File skipping logic**: Uses `should_skip_file()` to determine which files to process:
   - Skips files that contain encoding markers (`.fmpg.`, `.orig.`, or `.hbrk.`) in their filename
   - Skips original files if an encoded version exists in the same directory (checked via `has_encoded_version()`)
@@ -306,7 +307,27 @@ The script uses two methods to determine bitrate:
 
 ## Current Session Status
 
-### Latest Session (Linear Interpolation for Third Pass)
+### Latest Session (Configurable Subdirectory Depth)
+
+**Configurable Directory Traversal:**
+- Added `-L` and `--max-depth` command-line flags to `boiler.sh` for configurable subdirectory depth traversal
+- Default depth remains 2 (current directory + one subdirectory level) for backward compatibility
+- Supports depth 0 for unlimited recursive search
+- Updated `find_all_video_files()`, `find_skipped_video_files()`, and `preprocess_non_quicklook_files()` to use configurable depth
+- Added `validate_depth()` function for input validation
+- Updated `show_usage()` with depth flag documentation and examples
+- Added comprehensive tests for depth functionality (validate_depth, parse_arguments with depth flags, find_all_video_files with various depths)
+- Enhanced `cleanup-originals.sh` with the same configurable depth capability for consistency
+- Total test count: 212+ tests (up from 188+)
+- All tests passing
+
+**Implementation Details:**
+- Global variable `GLOBAL_MAX_DEPTH` with default value of 2 (allows environment variable override for testing)
+- Depth validation ensures non-negative integers only
+- Unlimited depth (0) removes `-maxdepth` constraint from find commands
+- Helper scripts (`cleanup-originals.sh`) now support the same depth traversal capability
+
+### Previous Session (Linear Interpolation for Third Pass)
 
 **Third Pass with Linear Interpolation:**
 - Added `calculate_interpolated_quality()` function that uses linear interpolation between two known data points to calculate a more accurate quality value

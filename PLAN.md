@@ -92,7 +92,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 - [x] **Multiple files in current directory**: Process all video files found in the current directory, not just the first one. This allows transcoding multiple videos in a single run. (Implemented)
 - [x] **Subdirectory processing (one level deep)**: Process video files in subdirectories one level deep from the current directory. This enables batch processing of organized video collections. (Implemented)
-- [ ] **Configurable subdirectory depth**: Add support for traversing an arbitrary number of subdirectories with a configurable depth limit. Implementation considerations:
+- [x] **Configurable subdirectory depth**: Add support for traversing an arbitrary number of subdirectories with a configurable depth limit. Implementation considerations:
   - **Default depth**: Keep current default of 2 levels deep (current directory + one subdirectory level) for backward compatibility
   - **Command-line flag**: Add `-L` or `--max-depth` flag (matching `tree` command convention) to specify maximum directory depth
   - **Unlimited depth**: Support `-L 0` or `--max-depth 0` to traverse all subdirectories without limit (full recursive search)
@@ -104,7 +104,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
   - **Implementation locations**: Update `find_all_video_files()`, `find_skipped_video_files()`, and `preprocess_non_quicklook_files()` to use configurable depth instead of hardcoded `-maxdepth 2`
   - **Validation**: Ensure depth value is a non-negative integer
   - **Documentation**: Update help text and README to explain the depth flag
-  This would provide flexibility for users with deeply nested directory structures while maintaining the current default behavior.
+  This would provide flexibility for users with deeply nested directory structures while maintaining the current default behavior. (Implemented)
 - [ ] **Predictable file processing order**: Iterate over files in a predictable order (e.g., alphabetical) to ensure consistent behavior across runs and make batch processing more deterministic.
 
 ### File Detection and Naming

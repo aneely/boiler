@@ -1,10 +1,15 @@
 #!/bin/bash
 
 # Helper script to move original video files (without transcoding markers) to trash
-# Processes current directory and subdirectories one level deep
+# Processes current directory and subdirectories (default: one level deep, configurable via -L/--max-depth)
 # Only moves files that don't have .fmpg., .orig., or .hbrk. markers
 
 set -e
+
+# Global max depth for directory traversal (default: 2 = current directory + one subdirectory level)
+# Set to 0 for unlimited depth (full recursive search)
+# Only set default if not already set (allows environment variable override for testing)
+GLOBAL_MAX_DEPTH="${GLOBAL_MAX_DEPTH:-2}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -23,6 +28,99 @@ warn() {
 
 error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# Sanitize value (remove newlines, carriage returns, and trim whitespace)
+sanitize_value() {
+    echo "$1" | tr -d '\n\r' | xargs
+}
+
+# Validate depth value
+# Arguments: depth_value (integer as string)
+# Returns: 0 if valid, 1 if invalid
+validate_depth() {
+    local depth="$1"
+    
+    # Check if empty
+    if [ -z "$depth" ]; then
+        return 1
+    fi
+    
+    # Check if it's a non-negative integer (0 for unlimited, or positive integer)
+    if ! echo "$depth" | grep -qE '^[0-9]+$'; then
+        return 1
+    fi
+    
+    return 0
+}
+
+# Show usage information
+show_usage() {
+    cat >&2 <<EOF
+Usage: $0 [OPTIONS]
+
+Move original video files (without transcoding markers) to trash.
+
+OPTIONS:
+    -L, --max-depth DEPTH        Maximum directory depth to traverse
+                                 Example: --max-depth 3
+                                 Default: 2 (current directory + one subdirectory level)
+                                 Use 0 for unlimited depth (full recursive search)
+
+    -h, --help                   Show this help message and exit
+
+EXAMPLES:
+    # Default behavior (2 levels deep)
+    $0
+
+    # Process only current directory (no subdirectories)
+    $0 -L 1
+
+    # Process three levels deep
+    $0 -L 3
+
+    # Process all subdirectories recursively (unlimited depth)
+    $0 -L 0
+
+The script scans for video files that don't have transcoding markers
+(.fmpg., .orig., or .hbrk.) and moves them to trash after confirmation.
+EOF
+}
+
+# Parse command-line arguments
+# Sets global variable GLOBAL_MAX_DEPTH if -L or --max-depth is provided
+parse_arguments() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -L|--max-depth)
+                if [ $# -lt 2 ]; then
+                    error "Error: --max-depth requires a value"
+                    error "Example: --max-depth 3"
+                    error "Use 0 for unlimited depth (full recursive search)"
+                    exit 1
+                fi
+                local depth_value="$2"
+                
+                if ! validate_depth "$depth_value"; then
+                    error "Error: Invalid depth value '$depth_value'"
+                    error "Depth must be a non-negative integer (0 for unlimited, or positive integer)"
+                    exit 1
+                fi
+                
+                GLOBAL_MAX_DEPTH=$(sanitize_value "$depth_value")
+                shift 2
+                ;;
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            *)
+                error "Error: Unknown option '$1'"
+                error "Use --help for usage information"
+                exit 1
+                ;;
+        esac
+    done
 }
 
 # Check if a file has any of the transcoding markers
@@ -57,16 +155,38 @@ move_to_trash() {
     fi
 }
 
+# Parse command-line arguments
+parse_arguments "$@"
+
 # Video file extensions to process
 video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv")
 
-# Get list of directories to check (current directory and subdirectories one level deep)
+# Get list of directories to check (uses GLOBAL_MAX_DEPTH for configurable depth)
 directories=(".")
-while IFS= read -r dir; do
-    if [ -n "$dir" ] && [ -d "$dir" ]; then
-        directories+=("$dir")
+max_depth="${GLOBAL_MAX_DEPTH:-2}"
+
+# Find subdirectories based on configured depth
+# If depth is 0 (unlimited), find all directories recursively
+# Otherwise, find directories up to the specified depth (maxdepth includes current dir, so we use maxdepth-1 for subdirs)
+if [ "$max_depth" -eq 0 ]; then
+    while IFS= read -r dir; do
+        if [ -n "$dir" ] && [ -d "$dir" ]; then
+            directories+=("$dir")
+        fi
+    done < <(find . -type d ! -path . 2>/dev/null)
+else
+    # For depth > 0, find all directories up to maxdepth (excluding current directory)
+    # maxdepth 2 = current dir (.) + one level of subdirectories
+    # So we find directories at depth 1 through (maxdepth-1)
+    subdir_depth=$((max_depth - 1))
+    if [ "$subdir_depth" -gt 0 ]; then
+        while IFS= read -r dir; do
+            if [ -n "$dir" ] && [ -d "$dir" ]; then
+                directories+=("$dir")
+            fi
+        done < <(find . -mindepth 1 -maxdepth "$subdir_depth" -type d 2>/dev/null)
     fi
-done < <(find . -maxdepth 1 -type d ! -path . 2>/dev/null)
+fi
 
 # Find all video files in current directory and subdirectories (one level deep)
 original_files=()

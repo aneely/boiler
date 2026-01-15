@@ -18,6 +18,11 @@ INTERRUPTED=0
 # Global target bitrate override (Mbps) - set via command-line flag
 GLOBAL_TARGET_BITRATE_MBPS=""
 
+# Global max depth for directory traversal (default: 2 = current directory + one subdirectory level)
+# Set to 0 for unlimited depth (full recursive search)
+# Only set default if not already set (allows environment variable override for testing)
+GLOBAL_MAX_DEPTH="${GLOBAL_MAX_DEPTH:-2}"
+
 # Cleanup function: kill entire process group on exit/interrupt
 # This automatically kills all child processes (including FFmpeg) without tracking PIDs
 # The -- -$$ syntax means "kill process group of $$ (our PID)"
@@ -87,6 +92,25 @@ validate_bitrate() {
     return 0
 }
 
+# Validate depth value
+# Arguments: depth_value (integer as string)
+# Returns: 0 if valid, 1 if invalid
+validate_depth() {
+    local depth="$1"
+    
+    # Check if empty
+    if [ -z "$depth" ]; then
+        return 1
+    fi
+    
+    # Check if it's a non-negative integer (0 for unlimited, or positive integer)
+    if ! echo "$depth" | grep -qE '^[0-9]+$'; then
+        return 1
+    fi
+    
+    return 0
+}
+
 # Show usage information
 show_usage() {
     cat >&2 <<EOF
@@ -100,10 +124,15 @@ OPTIONS:
                                  Applies the specified bitrate to all videos
                                  regardless of resolution.
 
+    -L, --max-depth DEPTH        Maximum directory depth to traverse
+                                 Example: --max-depth 3
+                                 Default: 2 (current directory + one subdirectory level)
+                                 Use 0 for unlimited depth (full recursive search)
+
     -h, --help                   Show this help message and exit
 
 EXAMPLES:
-    # Transcode with default resolution-based bitrates
+    # Transcode with default resolution-based bitrates (2 levels deep)
     $0
 
     # Transcode all files targeting 9.5 Mbps
@@ -112,6 +141,18 @@ EXAMPLES:
     # Using short flag
     $0 -t 6.0
 
+    # Process only current directory (no subdirectories)
+    $0 -L 1
+
+    # Process three levels deep
+    $0 -L 3
+
+    # Process all subdirectories recursively (unlimited depth)
+    $0 -L 0
+
+    # Combine options
+    $0 --target-bitrate 9.5 -L 3
+
 DEFAULT TARGET BITRATES (by resolution):
     2160p (4K):    11 Mbps
     1080p (Full HD): 8 Mbps
@@ -119,13 +160,14 @@ DEFAULT TARGET BITRATES (by resolution):
     480p (SD):      2.5 Mbps
 
 The script processes all video files in the current directory and
-subdirectories (one level deep), automatically skipping files that
+subdirectories (default: one level deep), automatically skipping files that
 are already encoded.
 EOF
 }
 
 # Parse command-line arguments
 # Sets global variable GLOBAL_TARGET_BITRATE_MBPS if --target-bitrate or -t is provided
+# Sets global variable GLOBAL_MAX_DEPTH if -L or --max-depth is provided
 parse_arguments() {
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -144,6 +186,24 @@ parse_arguments() {
                 fi
                 
                 GLOBAL_TARGET_BITRATE_MBPS=$(sanitize_value "$bitrate_value")
+                shift 2
+                ;;
+            -L|--max-depth)
+                if [ $# -lt 2 ]; then
+                    error "Error: --max-depth requires a value"
+                    error "Example: --max-depth 3"
+                    error "Use 0 for unlimited depth (full recursive search)"
+                    exit 1
+                fi
+                local depth_value="$2"
+                
+                if ! validate_depth "$depth_value"; then
+                    error "Error: Invalid depth value '$depth_value'"
+                    error "Depth must be a non-negative integer (0 for unlimited, or positive integer)"
+                    exit 1
+                fi
+                
+                GLOBAL_MAX_DEPTH=$(sanitize_value "$depth_value")
                 shift 2
                 ;;
             -h|--help)
@@ -297,21 +357,35 @@ should_skip_file() {
     return 1  # Should process
 }
 
-# Find all video files in current directory and subdirectories (one level deep, excluding skipped files)
+# Find all video files in current directory and subdirectories (excluding skipped files)
 # Returns all matching video files, one per line
+# Uses GLOBAL_MAX_DEPTH for directory depth (0 = unlimited, default: 2)
 find_all_video_files() {
     local video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv")
     local video_files=()
+    local max_depth="${GLOBAL_MAX_DEPTH:-2}"
 
     for ext in "${video_extensions[@]}"; do
-        while IFS= read -r found; do
-            if [ -n "$found" ]; then
-                # Skip files that contain markers indicating they're already processed
-                if ! should_skip_file "$found"; then
-                    video_files+=("$found")
+        # Use -maxdepth only if depth is not 0 (unlimited)
+        if [ "$max_depth" -eq 0 ]; then
+            while IFS= read -r found; do
+                if [ -n "$found" ]; then
+                    # Skip files that contain markers indicating they're already processed
+                    if ! should_skip_file "$found"; then
+                        video_files+=("$found")
+                    fi
                 fi
-            fi
-        done < <(find . -maxdepth 2 -type f -iname "*.${ext}" 2>/dev/null)
+            done < <(find . -type f -iname "*.${ext}" 2>/dev/null)
+        else
+            while IFS= read -r found; do
+                if [ -n "$found" ]; then
+                    # Skip files that contain markers indicating they're already processed
+                    if ! should_skip_file "$found"; then
+                        video_files+=("$found")
+                    fi
+                fi
+            done < <(find . -maxdepth "${max_depth}" -type f -iname "*.${ext}" 2>/dev/null)
+        fi
     done
 
     # Print each file on a separate line
@@ -321,20 +395,34 @@ find_all_video_files() {
 }
 
 # Find all skipped video files (files with .hbrk., .fmpg., or .orig. markers)
-# Returns all skipped video files, one per line (includes current directory and subdirectories one level deep)
+# Returns all skipped video files, one per line
+# Uses GLOBAL_MAX_DEPTH for directory depth (0 = unlimited, default: 2)
 find_skipped_video_files() {
     local video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv")
     local skipped_files=()
+    local max_depth="${GLOBAL_MAX_DEPTH:-2}"
 
     for ext in "${video_extensions[@]}"; do
-        while IFS= read -r found; do
-            if [ -n "$found" ]; then
-                # Only include files that should be skipped
-                if should_skip_file "$found"; then
-                    skipped_files+=("$found")
+        # Use -maxdepth only if depth is not 0 (unlimited)
+        if [ "$max_depth" -eq 0 ]; then
+            while IFS= read -r found; do
+                if [ -n "$found" ]; then
+                    # Only include files that should be skipped
+                    if should_skip_file "$found"; then
+                        skipped_files+=("$found")
+                    fi
                 fi
-            fi
-        done < <(find . -maxdepth 2 -type f -iname "*.${ext}" 2>/dev/null)
+            done < <(find . -type f -iname "*.${ext}" 2>/dev/null)
+        else
+            while IFS= read -r found; do
+                if [ -n "$found" ]; then
+                    # Only include files that should be skipped
+                    if should_skip_file "$found"; then
+                        skipped_files+=("$found")
+                    fi
+                fi
+            done < <(find . -maxdepth "${max_depth}" -type f -iname "*.${ext}" 2>/dev/null)
+        fi
     done
 
     # Print each file on a separate line
@@ -1131,22 +1219,39 @@ preprocess_non_quicklook_files() {
     local non_quicklook_extensions=("mkv" "wmv" "avi" "webm" "flv")
     local files_to_check=()
     local remuxed_count=0
+    local max_depth="${GLOBAL_MAX_DEPTH:-2}"
     
     # Find all non-QuickLook format files
     # Include files with .orig. markers (nondestructive remuxing) and files without markers
     for ext in "${non_quicklook_extensions[@]}"; do
-        while IFS= read -r found; do
-            if [ -n "$found" ] && [ -f "$found" ]; then
-                local basename=$(basename "$found")
-                # Include files without markers OR files with .orig. marker (for nondestructive remuxing)
-                if ! should_skip_file "$found" || [[ "$basename" == *".orig."* ]]; then
-                    # Double-check: only include if it's actually a non-QuickLook format
-                    if is_non_quicklook_format "$found"; then
-                        files_to_check+=("$found")
+        # Use -maxdepth only if depth is not 0 (unlimited)
+        if [ "$max_depth" -eq 0 ]; then
+            while IFS= read -r found; do
+                if [ -n "$found" ] && [ -f "$found" ]; then
+                    local basename=$(basename "$found")
+                    # Include files without markers OR files with .orig. marker (for nondestructive remuxing)
+                    if ! should_skip_file "$found" || [[ "$basename" == *".orig."* ]]; then
+                        # Double-check: only include if it's actually a non-QuickLook format
+                        if is_non_quicklook_format "$found"; then
+                            files_to_check+=("$found")
+                        fi
                     fi
                 fi
-            fi
-        done < <(find . -maxdepth 2 -type f -iname "*.${ext}" 2>/dev/null)
+            done < <(find . -type f -iname "*.${ext}" 2>/dev/null)
+        else
+            while IFS= read -r found; do
+                if [ -n "$found" ] && [ -f "$found" ]; then
+                    local basename=$(basename "$found")
+                    # Include files without markers OR files with .orig. marker (for nondestructive remuxing)
+                    if ! should_skip_file "$found" || [[ "$basename" == *".orig."* ]]; then
+                        # Double-check: only include if it's actually a non-QuickLook format
+                        if is_non_quicklook_format "$found"; then
+                            files_to_check+=("$found")
+                        fi
+                    fi
+                fi
+            done < <(find . -maxdepth "${max_depth}" -type f -iname "*.${ext}" 2>/dev/null)
+        fi
     done
     
     if [ ${#files_to_check[@]} -eq 0 ]; then

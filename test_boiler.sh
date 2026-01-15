@@ -794,6 +794,68 @@ test_skip_and_find_functions
 
 echo ""
 
+# Test find_all_video_files() with configurable depth
+test_find_all_video_files_depth() {
+    echo "Testing find_all_video_files() with configurable depth..."
+    
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || exit 1
+    
+    # Create directory structure:
+    # ./
+    #   video0.mp4 (current dir)
+    #   level1/
+    #     video1.mp4
+    #     level2/
+    #       video2.mp4
+    #       level3/
+    #         video3.mp4
+    
+    mkdir -p level1/level2/level3
+    touch video0.mp4
+    touch level1/video1.mp4
+    touch level1/level2/video2.mp4
+    touch level1/level2/level3/video3.mp4
+    
+    # Test depth 1 (current directory only)
+    found_files=$(bash -c "export BOILER_TEST_MODE=1; export GLOBAL_MAX_DEPTH=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; find_all_video_files" | sort)
+    local expected="$(echo -e './video0.mp4' | sort)"
+    assert_equal "$found_files" "$expected" "find_all_video_files: depth 1 finds only current directory"
+    
+    # Test depth 2 (current + one subdirectory level) - default
+    found_files=$(bash -c "export BOILER_TEST_MODE=1; export GLOBAL_MAX_DEPTH=2; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; find_all_video_files" | sort)
+    local expected="$(echo -e './level1/video1.mp4\n./video0.mp4' | sort)"
+    assert_equal "$found_files" "$expected" "find_all_video_files: depth 2 finds current + one subdirectory level"
+    
+    # Test depth 3 (current + two subdirectory levels)
+    found_files=$(bash -c "export BOILER_TEST_MODE=1; export GLOBAL_MAX_DEPTH=3; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; find_all_video_files" | sort)
+    local expected="$(echo -e './level1/level2/video2.mp4\n./level1/video1.mp4\n./video0.mp4' | sort)"
+    assert_equal "$found_files" "$expected" "find_all_video_files: depth 3 finds current + two subdirectory levels"
+    
+    # Test depth 4 (current + three subdirectory levels)
+    found_files=$(bash -c "export BOILER_TEST_MODE=1; export GLOBAL_MAX_DEPTH=4; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; find_all_video_files" | sort)
+    local expected="$(echo -e './level1/level2/level3/video3.mp4\n./level1/level2/video2.mp4\n./level1/video1.mp4\n./video0.mp4' | sort)"
+    assert_equal "$found_files" "$expected" "find_all_video_files: depth 4 finds current + three subdirectory levels"
+    
+    # Test depth 0 (unlimited - should find all files)
+    found_files=$(bash -c "export BOILER_TEST_MODE=1; export GLOBAL_MAX_DEPTH=0; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; find_all_video_files" | sort)
+    local expected="$(echo -e './level1/level2/level3/video3.mp4\n./level1/level2/video2.mp4\n./level1/video1.mp4\n./video0.mp4' | sort)"
+    assert_equal "$found_files" "$expected" "find_all_video_files: depth 0 (unlimited) finds all files recursively"
+    
+    # Test default depth (2) when GLOBAL_MAX_DEPTH is not set
+    found_files=$(bash -c "export BOILER_TEST_MODE=1; unset GLOBAL_MAX_DEPTH; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; find_all_video_files" | sort)
+    local expected="$(echo -e './level1/video1.mp4\n./video0.mp4' | sort)"
+    assert_equal "$found_files" "$expected" "find_all_video_files: default depth (2) when GLOBAL_MAX_DEPTH not set"
+    
+    # Cleanup
+    cd - > /dev/null || true
+    rm -rf "$temp_dir"
+}
+test_find_all_video_files_depth
+
+echo ""
+
 # Test extract_original_filename() and matching logic
 echo "Testing extract_original_filename() and original/encoded matching..."
 test_extract_and_matching() {
@@ -1699,12 +1761,36 @@ test_validate_bitrate
 
 echo ""
 
+# Test validate_depth()
+test_validate_depth() {
+    echo "Testing validate_depth()..."
+    
+    # Valid cases
+    validate_depth "0"; assert_equal $? 0 "validate_depth accepts 0 (unlimited)"
+    validate_depth "1"; assert_equal $? 0 "validate_depth accepts 1"
+    validate_depth "2"; assert_equal $? 0 "validate_depth accepts 2"
+    validate_depth "3"; assert_equal $? 0 "validate_depth accepts 3"
+    validate_depth "10"; assert_equal $? 0 "validate_depth accepts 10"
+    validate_depth "100"; assert_equal $? 0 "validate_depth accepts 100"
+    
+    # Invalid cases
+    validate_depth ""; assert_equal $? 1 "validate_depth rejects empty string"
+    validate_depth "-1"; assert_equal $? 1 "validate_depth rejects negative"
+    validate_depth "abc"; assert_equal $? 1 "validate_depth rejects non-numeric"
+    validate_depth "5.5"; assert_equal $? 1 "validate_depth rejects decimals"
+    validate_depth " 5 "; assert_equal $? 1 "validate_depth rejects whitespace (should be sanitized first)"
+}
+test_validate_depth
+
+echo ""
+
 # Test parse_arguments()
 test_parse_arguments() {
     echo "Testing parse_arguments()..."
     
-    # Reset global variable
+    # Reset global variables
     GLOBAL_TARGET_BITRATE_MBPS=""
+    GLOBAL_MAX_DEPTH=2  # Reset to default
     
     # Test --target-bitrate flag
     parse_arguments --target-bitrate 9.5
@@ -1715,23 +1801,47 @@ test_parse_arguments() {
     parse_arguments -t 6.0
     assert_equal "$GLOBAL_TARGET_BITRATE_MBPS" "6.0" "parse_arguments sets GLOBAL_TARGET_BITRATE_MBPS with -t"
     
+    # Test --max-depth flag
+    GLOBAL_MAX_DEPTH=2
+    parse_arguments --max-depth 3
+    assert_equal "$GLOBAL_MAX_DEPTH" "3" "parse_arguments sets GLOBAL_MAX_DEPTH with --max-depth"
+    
+    # Test -L flag
+    GLOBAL_MAX_DEPTH=2
+    parse_arguments -L 1
+    assert_equal "$GLOBAL_MAX_DEPTH" "1" "parse_arguments sets GLOBAL_MAX_DEPTH with -L"
+    
+    # Test unlimited depth (0)
+    GLOBAL_MAX_DEPTH=2
+    parse_arguments --max-depth 0
+    assert_equal "$GLOBAL_MAX_DEPTH" "0" "parse_arguments sets GLOBAL_MAX_DEPTH to 0 (unlimited)"
+    
     # Test no arguments
     GLOBAL_TARGET_BITRATE_MBPS=""
+    GLOBAL_MAX_DEPTH=2
     parse_arguments
     assert_empty "$GLOBAL_TARGET_BITRATE_MBPS" "parse_arguments leaves GLOBAL_TARGET_BITRATE_MBPS empty with no args"
+    assert_equal "$GLOBAL_MAX_DEPTH" "2" "parse_arguments leaves GLOBAL_MAX_DEPTH at default (2) with no args"
     
-    # Test decimal values
+    # Test decimal values (for bitrate)
     GLOBAL_TARGET_BITRATE_MBPS=""
     parse_arguments --target-bitrate 9.75
-    assert_equal "$GLOBAL_TARGET_BITRATE_MBPS" "9.75" "parse_arguments handles decimal values"
+    assert_equal "$GLOBAL_TARGET_BITRATE_MBPS" "9.75" "parse_arguments handles decimal values for bitrate"
     
     # Test error cases using subshells (since parse_arguments exits on error)
-    # Test missing value after flag
+    # Test missing value after --target-bitrate flag
     set +e
     (parse_arguments --target-bitrate 2>&1 > /dev/null)
     exit_code=$?
     set -e
     assert_equal $exit_code 1 "parse_arguments exits 1 when value missing after --target-bitrate"
+    
+    # Test missing value after --max-depth flag
+    set +e
+    (parse_arguments --max-depth 2>&1 > /dev/null)
+    exit_code=$?
+    set -e
+    assert_equal $exit_code 1 "parse_arguments exits 1 when value missing after --max-depth"
     
     # Test invalid bitrate value
     set +e
@@ -1739,6 +1849,20 @@ test_parse_arguments() {
     exit_code=$?
     set -e
     assert_equal $exit_code 1 "parse_arguments exits 1 when bitrate value is invalid (>100)"
+    
+    # Test invalid depth value (negative)
+    set +e
+    (parse_arguments --max-depth -1 2>&1 > /dev/null)
+    exit_code=$?
+    set -e
+    assert_equal $exit_code 1 "parse_arguments exits 1 when depth value is invalid (negative)"
+    
+    # Test invalid depth value (decimal)
+    set +e
+    (parse_arguments --max-depth 2.5 2>&1 > /dev/null)
+    exit_code=$?
+    set -e
+    assert_equal $exit_code 1 "parse_arguments exits 1 when depth value is invalid (decimal)"
     
     # Test unknown flag
     set +e
@@ -1758,6 +1882,18 @@ test_parse_arguments() {
     GLOBAL_TARGET_BITRATE_MBPS=""
     parse_arguments -t 5.0 --target-bitrate 9.5
     assert_equal "$GLOBAL_TARGET_BITRATE_MBPS" "9.5" "parse_arguments: last flag wins when multiple flags provided"
+    
+    # Test that last flag wins if both -L and --max-depth are provided
+    GLOBAL_MAX_DEPTH=2
+    parse_arguments -L 1 --max-depth 3
+    assert_equal "$GLOBAL_MAX_DEPTH" "3" "parse_arguments: last depth flag wins when multiple flags provided"
+    
+    # Test combining both flags
+    GLOBAL_TARGET_BITRATE_MBPS=""
+    GLOBAL_MAX_DEPTH=2
+    parse_arguments --target-bitrate 9.5 --max-depth 3
+    assert_equal "$GLOBAL_TARGET_BITRATE_MBPS" "9.5" "parse_arguments: sets bitrate when both flags provided"
+    assert_equal "$GLOBAL_MAX_DEPTH" "3" "parse_arguments: sets depth when both flags provided"
 }
 test_parse_arguments
 
