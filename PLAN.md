@@ -119,6 +119,18 @@ Create a simplified command-line tool for video transcoding on macOS that:
   - **Transcoded files**: `{base}.fmpg.{actual_bitrate}.Mbps.{ext}` (e.g., `video.fmpg.10.25.Mbps.mp4`)
   - **Files below target**: `{base}.orig.{actual_bitrate}.Mbps.{ext}` (e.g., `video.orig.2.90.Mbps.mp4`)
   - Actual bitrate is measured after transcoding and included with 2 decimal places for precision
+- [ ] **Force flag to bypass file skipping**: Add a `--force` or `-f` flag that allows processing files that would normally be skipped due to filename markers (`.fmpg.`, `.orig.`, `.hbrk.`). This would enable re-processing already transcoded files when needed (e.g., to re-encode with different settings, fix encoding issues, or update files with new encoding parameters). Implementation considerations:
+  - **Command-line flag**: Add `-f` or `--force` flag to bypass `should_skip_file()` checks
+  - **Skip logic modification**: Update `find_all_video_files()` and file processing logic to respect the force flag
+  - **Safety considerations**: The force flag should still respect encoded version checks (e.g., if both original and encoded exist, force should allow processing the encoded version)
+  - **Use cases**: 
+    - Re-encoding files with updated target bitrates or quality settings
+    - Fixing encoding issues or artifacts in previously transcoded files
+    - Updating files to use newer encoding parameters or codec versions
+    - Processing files that were incorrectly marked or need re-processing
+  - **Warning message**: When force flag is used, display a clear warning that already-processed files will be re-processed
+  - **Documentation**: Update help text to explain the force flag and its use cases
+  This would provide flexibility for edge cases where re-processing is needed while maintaining the default safe behavior of skipping already-processed files.
 
 ### Quality Control and Optimization
 

@@ -229,11 +229,12 @@ The script uses an iterative approach to find the optimal quality setting using 
 ```
 boiler/
 ├── boiler.sh                    # Main transcoding script
-├── test_boiler.sh               # Test suite with function mocking (183 tests)
+├── test_boiler.sh               # Test suite with function mocking (212+ tests)
 ├── copy-1080p-test.sh          # Helper: Copy 1080p test video to current directory
 ├── copy-4k-test.sh              # Helper: Copy 4K test video to current directory
 ├── cleanup-mp4.sh               # Helper: Remove all .mp4 files from project root
 ├── cleanup-originals.sh          # Helper: Remove all .orig. marked video files (moves to trash)
+├── remux-only.sh                # Helper: Remux video files to MP4 with .orig.{bitrate}.Mbps naming
 ├── .gitignore                   # Git ignore patterns (macOS, video files, outputs)
 ├── PROJECT-CONTEXT.md           # Technical documentation
 ├── PLAN.md                      # Development roadmap
@@ -307,7 +308,24 @@ The script uses two methods to determine bitrate:
 
 ## Current Session Status
 
-### Latest Session (Configurable Subdirectory Depth)
+### Latest Session (Remux-Only Script and Future Enhancements)
+
+**Remux-Only Script:**
+- Created `remux-only.sh` - Standalone script for remuxing video files to MP4 with `.orig.{bitrate}.Mbps` naming
+- Only remuxes (no transcoding) - converts container format for QuickLook compatibility
+- Processes non-QuickLook compatible formats: mkv, wmv, avi, webm, flv (only if codec is MP4-compatible)
+- Includes configurable subdirectory depth traversal via `-L`/`--max-depth` flag (matching boiler.sh and cleanup-originals.sh)
+- Checks codec compatibility before remuxing (skips incompatible codecs like WMV3)
+- Measures source bitrate and includes it in the output filename
+- Removes original file only if remux succeeds
+- Supports processing specific files or all compatible files in directory/subdirectories
+
+**Future Enhancements:**
+- Added future enhancement to PLAN.md for force flag (`--force` or `-f`) to bypass file skipping logic in boiler.sh
+- Force flag would allow re-processing files with `.fmpg.`, `.orig.`, or `.hbrk.` markers
+- Documented use cases: re-encoding with updated settings, fixing encoding issues, updating encoding parameters
+
+### Previous Session (Configurable Subdirectory Depth)
 
 **Configurable Directory Traversal:**
 - Added `-L` and `--max-depth` command-line flags to `boiler.sh` for configurable subdirectory depth traversal
