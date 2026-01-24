@@ -32,11 +32,14 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Error handling and validation
 - [x] Early exit check: Skip transcoding if source video is already within ±5% of target bitrate
 - [x] MKV remuxing: Automatically remuxes MKV files that are within tolerance or below target to MP4 with QuickLook compatibility (copies streams without transcoding)
-- [x] Helper scripts for testing (copy test videos, cleanup)
-- [x] Comprehensive test suite with function mocking (183 tests, CI/CD ready)
+- [x] Helper scripts for testing (copy test videos, cleanup, remux-only, cleanup-originals)
+- [x] Comprehensive test suite with function mocking (212+ tests, CI/CD ready)
 - [x] Second pass transcoding: Automatically performs a second transcoding pass with adjusted quality if the first pass bitrate is outside tolerance range
 - [x] Preprocessing pass for non-QuickLook formats: Automatically remuxes non-QuickLook compatible files (mkv, wmv, avi, webm, flv) that are within tolerance or below target, including `.orig.` files, before main file discovery
 - [x] Codec compatibility checking: Checks codec compatibility before remuxing to prevent failures with incompatible codecs (e.g., WMV3)
+- [x] Command-line target bitrate override: Added `--target-bitrate` (or `-t`) flag to override resolution-based target bitrate for all files
+- [x] Configurable subdirectory depth: Added `-L` and `--max-depth` command-line flags for configurable directory traversal depth (default: 2, supports unlimited with `-L 0`)
+- [x] Third pass with linear interpolation: Automatically performs a third transcoding pass using linear interpolation between first and second pass data points when second pass is still outside tolerance, addressing overcorrection issues
 
 ### Current Defaults
 
@@ -58,7 +61,8 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - `copy-1080p-test.sh` - Copies 1080p test video to current directory
 - `copy-4k-test.sh` - Copies 4K test video to current directory
 - `cleanup-mp4.sh` - Removes all .mp4 files from project root directory
-- `cleanup-originals.sh` - Removes all `.orig.` marked video files from current directory and subdirectories (moves to trash)
+- `cleanup-originals.sh` - Removes all `.orig.` marked video files from current directory and subdirectories (moves to trash). Supports `-L`/`--max-depth` flag for configurable depth traversal.
+- `remux-only.sh` - Standalone script for remuxing video files to MP4 with `.orig.{bitrate}.Mbps` naming. Only remuxes (no transcoding) - converts container format for QuickLook compatibility. Processes non-QuickLook compatible formats (mkv, wmv, avi, webm, flv) and includes codec compatibility checking. Supports `-L`/`--max-depth` flag for configurable depth traversal.
 
 ### Known Issues / Recent Changes
 
@@ -67,7 +71,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - **Multi-point sampling**: Implemented to address issue where single sample from beginning didn't accurately predict full video bitrate.
 - **No iteration limit**: Removed iteration limit safeguard - loop continues until convergence or quality bounds (0-100) are reached.
 - **Code refactoring**: Consolidated duplicate bitrate measurement logic into generic `measure_bitrate()` function. Extracted tolerance checking into `is_within_tolerance()` helper. Added `sanitize_value()` helper for consistent value sanitization. Renamed `find_optimal_bitrate()` to `find_optimal_quality()` to reflect constant quality mode.
-- **Testing infrastructure**: Implemented comprehensive test suite with function mocking using file-based call tracking. 183 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` unit tests, codec compatibility checking, and error handling tests). Tests work without FFmpeg/ffprobe installation, enabling CI/CD workflows. Uses temporary files for call tracking to work around bash subshell limitations.
+- **Testing infrastructure**: Implemented comprehensive test suite with function mocking using file-based call tracking. 212+ tests covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second and third pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` and `calculate_interpolated_quality()` unit tests, codec compatibility checking, configurable depth traversal, command-line argument parsing, and error handling tests). Tests work without FFmpeg/ffprobe installation, enabling CI/CD workflows. Uses temporary files for call tracking to work around bash subshell limitations.
 - **Sample duration**: Sample duration is set to 60 seconds for better bitrate accuracy. Adaptive sampling logic uses fewer samples for shorter videos (1 sample for videos <120s, 2 samples for 120-179s, 3 samples for ≥180s).
 - **FFmpeg process cleanup**: Signal handling implemented to kill process group on interrupt, but may need verification.
 
@@ -104,7 +108,8 @@ Create a simplified command-line tool for video transcoding on macOS that:
   - **Implementation locations**: Update `find_all_video_files()`, `find_skipped_video_files()`, and `preprocess_non_quicklook_files()` to use configurable depth instead of hardcoded `-maxdepth 2`
   - **Validation**: Ensure depth value is a non-negative integer
   - **Documentation**: Update help text and README to explain the depth flag
-  This would provide flexibility for users with deeply nested directory structures while maintaining the current default behavior. (Implemented)
+  - **Helper script consistency**: Updated `cleanup-originals.sh` and `remux-only.sh` to support the same depth traversal capability
+  This provides flexibility for users with deeply nested directory structures while maintaining the current default behavior. (Implemented)
 - [ ] **Predictable file processing order**: Iterate over files in a predictable order (e.g., alphabetical) to ensure consistent behavior across runs and make batch processing more deterministic.
 
 ### File Detection and Naming
@@ -134,7 +139,21 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 ### Quality Control and Optimization
 
-- [x] **Command-line bitrate override**: Add command-line argument support (e.g., `--target-bitrate 6.5`) to override the resolution-based target bitrate. The `transcode_video()` function already supports an optional target bitrate override parameter, so this would primarily involve adding argument parsing to the main script entry point. This would enable users to specify custom bitrates for specific transcoding operations without modifying the script. (Implemented - supports `--target-bitrate` and `-t` flags, applies to all files)
+- [x] **Command-line bitrate override**: Add command-line argument support (e.g., `--target-bitrate 6.5`) to override the resolution-based target bitrate. The `transcode_video()` function already supports an optional target bitrate override parameter, so this would primarily involve adding argument parsing to the main script entry point. This would enable users to specify custom bitrates for specific transcoding operations without modifying the script. (Implemented - supports `--target-bitrate` and `-t` flags, applies to all files, validates bitrate values between 0.1 and 100 Mbps)
+- [ ] **Aspect ratio corner case handling**: Handle edge cases where files are effectively 1080p or 4K resolution but the current height-based detection picks a lower resolution target due to unusual aspect ratios (very narrow/wide videos). For example, a 2160x1080 (2:1 ultrawide) video would currently be detected as 1080p based on height, but it's effectively 4K content. Implementation considerations:
+  - **Dual-dimension checking**: Use both height and width to determine resolution tier
+  - **Approach options**:
+    - Check if width meets the threshold even if height doesn't (e.g., 3840 width = 4K even if height is 1080)
+    - Use the larger dimension (max of width/height) to determine resolution tier
+    - Check both dimensions and use the higher tier that either dimension qualifies for
+  - **Resolution thresholds**: 
+    - 4K: height ≥2160 OR width ≥3840
+    - 1080p: height ≥1080 OR width ≥1920 (but not 4K)
+    - 720p: height ≥720 OR width ≥1280 (but not 1080p/4K)
+    - 480p: height ≥480 OR width ≥854 (but not higher tiers)
+  - **Implementation**: Update `get_video_resolution()` to extract both width and height, then modify `calculate_target_bitrate()` to use dual-dimension logic
+  - **Backward compatibility**: Ensure standard 16:9 videos continue to work as expected
+  This would ensure that ultrawide, portrait, or other non-standard aspect ratio videos get appropriate bitrate targets based on their actual content resolution rather than just height.
 - [ ] **Configurable target bitrates**: Allow users to customize target bitrates per resolution (2160p, 1080p, 720p, 480p) via configuration file or command-line options. This would enable users to adjust bitrates based on their specific quality/file size preferences, storage constraints, or use case requirements (e.g., archival vs. distribution).
 - [ ] **SDR vs HDR bitrate differentiation**: Detect video dynamic range (Standard Dynamic Range vs. High Dynamic Range) and apply different target bitrates accordingly. HDR content typically requires higher bitrates (e.g., 6.5 Mbps for 720p HDR vs. 5 Mbps for 720p SDR, 35-45 Mbps for 4K HDR vs. current 11 Mbps for 4K SDR) to maintain quality due to increased color depth and brightness range. This would improve quality for HDR content while keeping file sizes reasonable for SDR content.
 - [ ] **Configurable constant quality start ranges**: Allow users to specify custom starting quality values or ranges for the optimization loop, rather than always starting at a fixed value (currently 60). This would help optimize for different use cases or content types.

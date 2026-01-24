@@ -63,7 +63,7 @@ brew install bc
    ```
 
 3. The script will:
-   - Find all video files in the current directory and subdirectories (one level deep)
+   - Find all video files in the current directory and subdirectories (default: one level deep, configurable via `-L`/`--max-depth` flag)
    - Automatically skip files that are already encoded (contain `.fmpg.`, `.orig.`, or `.hbrk.` markers) or have encoded versions in the same directory
    - Process each video file found
    - For each video:
@@ -81,6 +81,12 @@ brew install bc
   - Applies the specified bitrate to all videos regardless of resolution
   - Accepts decimal values (e.g., `9.5` for 9.5 Mbps)
   - Must be between 0.1 and 100 Mbps
+
+- `-L, --max-depth DEPTH` - Maximum directory depth to traverse (default: 2)
+  - Example: `./boiler.sh -L 3` (three levels deep)
+  - Example: `./boiler.sh -L 0` (unlimited depth, full recursive)
+  - Example: `./boiler.sh -L 1` (current directory only, no subdirectories)
+  - Default depth of 2 means current directory + one subdirectory level
 
 - `-h, --help` - Show usage information and exit
 
@@ -107,7 +113,7 @@ brew install bc
 
 The script follows a modular architecture with focused functions for each step:
 
-1. **Discovery**: Finds all video files in the current directory and subdirectories (one level deep), automatically skipping files that are already encoded (contain `.fmpg.`, `.orig.`, or `.hbrk.` markers) or have encoded versions in the same directory
+1. **Discovery**: Finds all video files in the current directory and subdirectories (default: one level deep, configurable via `-L`/`--max-depth` flag), automatically skipping files that are already encoded (contain `.fmpg.`, `.orig.`, or `.hbrk.` markers) or have encoded versions in the same directory
 2. **Analysis**: Uses `ffprobe` to determine video resolution and duration for each file
 3. **Targeting**: Sets target bitrate based on resolution
 4. **Pre-check**: Checks if source video is already within ±5% of target bitrate (exits early if so)
@@ -138,8 +144,8 @@ The tool automatically detects these video file extensions:
 ## Limitations
 
 - **macOS-only** - Currently only supports macOS (VideoToolbox hardware acceleration requires macOS)
-- Processes video files in current directory and subdirectories one level deep (not recursive)
-- Uses hardcoded defaults (not yet configurable)
+- Processes video files in current directory and subdirectories (default: one level deep, configurable via `-L`/`--max-depth` flag; use `-L 0` for unlimited recursive search)
+- Uses hardcoded defaults (not yet configurable via config file, though command-line overrides are available)
 - Audio is always copied (not re-encoded)
 
 ## Future Features
@@ -151,6 +157,7 @@ See [PLAN.md](PLAN.md) for the complete roadmap. Upcoming features include:
 - ⚙️ **Configuration system** - Customize default bitrates, codecs, and containers
   - Configurable target bitrates per resolution (2160p, 1080p, 720p, 480p)
   - SDR vs HDR bitrate differentiation (separate bitrates for Standard Dynamic Range and High Dynamic Range content)
+- 📐 **Aspect ratio corner case handling** - Improved resolution detection for ultrawide, portrait, and other non-standard aspect ratio videos using both width and height dimensions to ensure appropriate bitrate targets (e.g., 2160x1080 ultrawide videos correctly identified as 4K content)
 - 📦 **Installation** - Install as a system command, run from any directory
 - 🌐 **Cross-platform support** - Port to Linux/Windows (currently macOS-only)
 
@@ -187,10 +194,12 @@ For testing and development, helper scripts are available:
 - **`./copy-1080p-test.sh`** - Copies the 1080p test video to the current directory
 - **`./copy-4k-test.sh`** - Copies the 4K test video to the current directory  
 - **`./cleanup-mp4.sh`** - Removes all .mp4 files from the project root directory
+- **`./cleanup-originals.sh`** - Removes all `.orig.` marked video files from current directory and subdirectories (moves to trash). Supports `-L`/`--max-depth` flag for configurable depth traversal.
+- **`./remux-only.sh`** - Standalone script for remuxing video files to MP4 with `.orig.{bitrate}.Mbps` naming. Only remuxes (no transcoding) - converts container format for QuickLook compatibility. Processes non-QuickLook compatible formats (mkv, wmv, avi, webm, flv) and includes codec compatibility checking. Supports `-L`/`--max-depth` flag for configurable depth traversal.
 
 ### Running Tests
 
-The project includes a comprehensive test suite (`test_boiler.sh`) with 183+ tests covering utility functions, mocked FFmpeg/ffprobe functions, and full integration tests (including second and third pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` and `calculate_interpolated_quality()` unit tests, codec compatibility checking, and error handling tests). The test suite uses function mocking to avoid requiring actual video files or FFmpeg installation, making it suitable for CI/CD environments.
+The project includes a comprehensive test suite (`test_boiler.sh`) with 212+ tests covering utility functions, mocked FFmpeg/ffprobe functions, and full integration tests (including second and third pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` and `calculate_interpolated_quality()` unit tests, codec compatibility checking, configurable depth traversal, command-line argument parsing, and error handling tests). The test suite uses function mocking to avoid requiring actual video files or FFmpeg installation, making it suitable for CI/CD environments.
 
 To run the test suite:
 ```bash

@@ -33,7 +33,7 @@ This ensures the user maintains control over the development direction and can m
 **Before committing ANY changes, you MUST:**
 1. **Run the test suite**: Execute `bash test_boiler.sh` and verify it completes successfully
 2. **Verify exit code**: The test suite MUST exit with code 0 (all tests passing)
-3. **Check test output**: Review the test summary to confirm all tests passed (e.g., "Passed: 183, Failed: 0")
+3. **Check test output**: Review the test summary to confirm all tests passed (e.g., "Passed: 212, Failed: 0")
 4. **Fix any failures**: If ANY tests fail, you MUST fix the issues before committing
 5. **NEVER commit without running tests**: Do not skip this step, even for minor changes
 
@@ -117,6 +117,10 @@ The script is modularized into the following function categories:
 **Configuration Functions:**
 - `calculate_target_bitrate()` - Determines target bitrate based on resolution
 - `calculate_sample_points()` - Calculates sample points with adaptive logic: 3 samples for videos ≥180s, 2 samples for 120-179s, 1 sample for shorter videos. Uses 60-second samples (or full video for videos <60s)
+- `parse_arguments()` - Parses command-line arguments (`--target-bitrate`/`-t`, `--max-depth`/`-L`, `--help`/`-h`)
+- `validate_bitrate()` - Validates target bitrate override values (must be between 0.1 and 100 Mbps)
+- `validate_depth()` - Validates directory depth values (must be non-negative integer)
+- `show_usage()` - Displays usage information and command-line options
 
 **Transcoding Functions:**
 - `transcode_sample()` - Transcodes a single sample from a specific point using constant quality mode (`-q:v`)
@@ -233,8 +237,8 @@ boiler/
 ├── copy-1080p-test.sh          # Helper: Copy 1080p test video to current directory
 ├── copy-4k-test.sh              # Helper: Copy 4K test video to current directory
 ├── cleanup-mp4.sh               # Helper: Remove all .mp4 files from project root
-├── cleanup-originals.sh          # Helper: Remove all .orig. marked video files (moves to trash)
-├── remux-only.sh                # Helper: Remux video files to MP4 with .orig.{bitrate}.Mbps naming
+├── cleanup-originals.sh          # Helper: Remove all .orig. marked video files (moves to trash). Supports -L/--max-depth flag.
+├── remux-only.sh                # Helper: Remux video files to MP4 with .orig.{bitrate}.Mbps naming. Supports -L/--max-depth flag.
 ├── .gitignore                   # Git ignore patterns (macOS, video files, outputs)
 ├── PROJECT-CONTEXT.md           # Technical documentation
 ├── PLAN.md                      # Development roadmap
@@ -285,7 +289,7 @@ The script uses two methods to determine bitrate:
 ### Testing Infrastructure
 
 **Test Suite (`test_boiler.sh`):**
-- **183 tests** covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` unit tests, codec compatibility checking, and error handling tests)
+- **212+ tests** covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second and third pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` and `calculate_interpolated_quality()` unit tests, codec compatibility checking, configurable depth traversal, command-line argument parsing, and error handling tests)
 - **Function mocking approach**: Uses file-based call tracking to mock FFmpeg/ffprobe-dependent functions without requiring actual video files or FFmpeg installation
 - **Mocked functions**:
   - `get_video_resolution()` - Returns configurable resolution (default: 1080p)
@@ -529,9 +533,9 @@ The script uses two methods to determine bitrate:
 ## Current Limitations
 
 1. **macOS-only**: Currently only supports macOS (VideoToolbox hardware acceleration requires macOS)
-2. **Subdirectory depth**: Only processes subdirectories one level deep (not recursive)
-3. **Hardcoded defaults**: Bitrates, codec, and container are fixed
-4. **No configuration**: No user-configurable settings
+2. **Subdirectory depth**: Default depth is 2 levels (current directory + one subdirectory level), but configurable via `-L`/`--max-depth` flag (use `-L 0` for unlimited recursive search)
+3. **Hardcoded defaults**: Bitrates, codec, and container are fixed (though target bitrate can be overridden via `--target-bitrate` flag)
+4. **Limited configuration**: No config file support yet (only command-line overrides for target bitrate and depth)
 5. **No installation**: Script must be run directly, not installed as system command
 6. **Audio handling**: Always copies audio without re-encoding options
 
