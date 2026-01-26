@@ -881,17 +881,16 @@ find_optimal_quality() {
     
     local min_step=1      # Minimum adjustment step (for fine-tuning when close)
     local max_step=10     # Maximum adjustment step (for large corrections when far off)
+    local max_iterations=50  # Safety cap to prevent infinite loops
     local iteration=0
     # Start with a reasonable quality value
     # VideoToolbox -q:v scale: higher value = higher quality = higher bitrate
     # 60 is a good starting point
     local test_quality=60
     
-    # Track previous iterations for oscillation detection (can detect cycles of 2-3 values)
-    local prev_quality=""
-    local prev_bitrate_bps=""
-    local prev_prev_quality=""
-    local prev_prev_bitrate_bps=""
+    # Full history of tried (quality, bitrate_bps) for repeat detection and best-from-history
+    # Format: space-separated "quality:bitrate_bps" (bash 3.2 compatible)
+    local tried_history=""
     
     info "Starting quality adjustment process..."
     info "Using constant quality mode (-q:v), sampling from multiple points to find optimal quality setting"
@@ -967,6 +966,14 @@ find_optimal_quality() {
         fi
         info "Average bitrate from $sample_count samples: ${actual_bitrate_mbps} Mbps"
         
+        # Record this (quality, bitrate) in history for repeat detection and best-from-history
+        # Use test_quality (the quality we just tested) rather than old_quality (which isn't set yet)
+        if [ -z "$tried_history" ]; then
+            tried_history="${test_quality}:${actual_bitrate_bps}"
+        else
+            tried_history="$tried_history ${test_quality}:${actual_bitrate_bps}"
+        fi
+        
         # Check if within acceptable range
         if is_within_tolerance "$actual_bitrate_bps" "$lower_bound" "$upper_bound"; then
             info "Bitrate is within acceptable range (5% of target)"
@@ -1030,60 +1037,54 @@ find_optimal_quality() {
             info "Actual bitrate too high (${actual_bitrate_mbps} Mbps vs ${target_bitrate_mbps} Mbps target, ratio=${ratio}), decreasing quality value from ${old_quality} to ${test_quality} (adjustment: -${quality_adjustment})"
         fi
         
-        # Detect oscillation: if we're about to try a quality value we've already tested recently
-        # This detects cycles of 2-3 quality values (e.g., 60 ↔ 61 ↔ 62)
-        local oscillation_detected=0
-        local best_quality=""
-        local best_bitrate_bps=""
-        local best_distance=""
+        # Max iterations safeguard: prevent infinite loops
+        local loop_exit_reason=""
+        if [ "$iteration" -ge "$max_iterations" ]; then
+            loop_exit_reason="max iterations ($max_iterations)"
+        fi
         
-        if [ -n "$prev_quality" ] && [ "$test_quality" = "$prev_quality" ]; then
-            # We're about to test the same quality as last iteration - 2-value oscillation
-            oscillation_detected=1
-            # Compare current and previous quality
-            local current_distance=$(calculate_squared_distance "$actual_bitrate_bps" "$target_bitrate_bps")
-            local prev_distance=$(calculate_squared_distance "$prev_bitrate_bps" "$target_bitrate_bps")
-            
-            if (( $(echo "$current_distance < $prev_distance" | bc -l) )); then
-                best_quality=$old_quality
-                best_bitrate_bps=$actual_bitrate_bps
-            else
-                best_quality=$prev_quality
-                best_bitrate_bps=$prev_bitrate_bps
-            fi
-        elif [ -n "$prev_prev_quality" ] && [ "$test_quality" = "$prev_prev_quality" ]; then
-            # We're about to test a quality from 2 iterations ago - 3-value cycle detected
-            oscillation_detected=1
-            # Compare all three quality values: current, prev, and prev_prev
-            local current_distance=$(calculate_squared_distance "$actual_bitrate_bps" "$target_bitrate_bps")
-            local prev_distance=$(calculate_squared_distance "$prev_bitrate_bps" "$target_bitrate_bps")
-            local prev_prev_distance=$(calculate_squared_distance "$prev_prev_bitrate_bps" "$target_bitrate_bps")
-            
-            # Find the closest one
-            if (( $(echo "$current_distance <= $prev_distance" | bc -l) )) && (( $(echo "$current_distance <= $prev_prev_distance" | bc -l) )); then
-                best_quality=$old_quality
-                best_bitrate_bps=$actual_bitrate_bps
-            elif (( $(echo "$prev_distance <= $prev_prev_distance" | bc -l) )); then
-                best_quality=$prev_quality
-                best_bitrate_bps=$prev_bitrate_bps
-            else
-                best_quality=$prev_prev_quality
-                best_bitrate_bps=$prev_prev_bitrate_bps
+        # Detect repeat: if we're about to try a quality we've already tried, we're in a loop
+        # (covers 2-value oscillation, 3-value cycles, and longer or irregular cycles)
+        if [ -z "$loop_exit_reason" ] && [ -n "$tried_history" ]; then
+            local already_tried=0
+            for entry in $tried_history; do
+                [ -z "$entry" ] && continue
+                local hist_quality="${entry%%:*}"
+                if [ "$hist_quality" = "$test_quality" ]; then
+                    already_tried=1
+                    break
+                fi
+            done
+            if [ "$already_tried" -eq 1 ]; then
+                loop_exit_reason="quality ${test_quality} already tried (loop detected)"
             fi
         fi
         
-        if [ "$oscillation_detected" -eq 1 ]; then
-            local best_bitrate_mbps=$(bps_to_mbps "$best_bitrate_bps")
-            info "Oscillation detected. Using quality=${best_quality} (closest to target: ${best_bitrate_mbps} Mbps)"
-            test_quality=$best_quality
+        if [ -n "$loop_exit_reason" ]; then
+            # Pick best (quality, bitrate) from full history by distance to target
+            local best_quality=""
+            local best_bitrate_bps=""
+            local best_distance=""
+            for entry in $tried_history; do
+                [ -z "$entry" ] && continue
+                local hist_quality="${entry%%:*}"
+                local hist_bitrate="${entry#*:}"
+                local dist=$(calculate_squared_distance "$hist_bitrate" "$target_bitrate_bps")
+                local dist_lt_best
+                dist_lt_best=$(echo "$dist < $best_distance" | bc -l 2>/dev/null | tr -d '\n\r' | xargs)
+                if [ -z "$best_distance" ] || [ "${dist_lt_best:-0}" = "1" ]; then
+                    best_quality=$hist_quality
+                    best_bitrate_bps=$hist_bitrate
+                    best_distance=$dist
+                fi
+            done
+            if [ -n "$best_quality" ]; then
+                local best_bitrate_mbps=$(bps_to_mbps "$best_bitrate_bps")
+                info "Stopping: $loop_exit_reason. Using quality=${best_quality} (closest to target: ${best_bitrate_mbps} Mbps)"
+                test_quality=$best_quality
+            fi
             break
         fi
-        
-        # Store current values for next iteration's oscillation detection
-        prev_prev_quality=$prev_quality
-        prev_prev_bitrate_bps=$prev_bitrate_bps
-        prev_quality=$old_quality
-        prev_bitrate_bps=$actual_bitrate_bps
     done
     
     echo "$test_quality"

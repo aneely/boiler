@@ -207,6 +207,23 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 ### Development Workflow
 
+- [ ] **Test suite refactoring for speed and independence**: Refactor the test suite to make tests faster and independently runnable. Current test suite (212+ tests) uses a custom framework with function mocking, but tests share state and run sequentially. Potential improvements:
+  - **Independent test execution**: Make each test function completely isolated with no shared state (currently uses global variables and file-based call tracking that persists across tests)
+  - **Parallel test execution**: Enable running tests in parallel to reduce total execution time (currently runs sequentially)
+  - **Selective test execution**: Allow running individual tests or test groups without running the entire suite
+  - **Adopt bats framework**: Evaluate adopting [bats](https://github.com/bats-core/bats-core) (Bash Automated Testing System) or similar testing framework for:
+    - Standardized test structure and assertions
+    - Built-in parallel execution support
+    - Better test isolation and cleanup
+    - Improved test output and reporting
+    - Easier test maintenance and readability
+  - **Benefits**: Faster feedback during development, ability to run only relevant tests, better CI/CD performance, standardized testing patterns
+  - **Trade-offs**: Migration effort, potential need to adapt existing mocking approach, learning curve for new framework
+  - **Implementation considerations**:
+    - Preserve existing function mocking approach (works well for FFmpeg/ffprobe dependencies)
+    - Maintain compatibility with CI/CD workflows (currently works without FFmpeg installation)
+    - Ensure test coverage remains comprehensive (212+ tests covering utility functions, integration tests, error handling)
+    - Consider hybrid approach: use bats for structure but keep custom mocking for FFmpeg/ffprobe functions
 - [ ] **Account-wide Cursor configuration for "remember what you need to" convention**: Explore options for making the PROJECT-CONTEXT.md/PLAN.md/README.md update convention reusable across projects. Options to investigate:
   - Custom command template in `~/.cursor/command-templates/` that can be copied to each project's `.cursor/commands/` directory
   - Global `.cursorrules` file in home directory (`~/.cursorrules`) if Cursor supports account-wide rules

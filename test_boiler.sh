@@ -1748,14 +1748,16 @@ test_validate_bitrate() {
     validate_bitrate "100" && assert_equal $? 0 "validate_bitrate accepts maximum (100)"
     validate_bitrate "50.25" && assert_equal $? 0 "validate_bitrate accepts decimal with two places"
     
-    # Invalid bitrates (these should return 1/false)
-    validate_bitrate ""; assert_equal $? 1 "validate_bitrate rejects empty string"
-    validate_bitrate "0"; assert_equal $? 1 "validate_bitrate rejects zero"
-    validate_bitrate "-5"; assert_equal $? 1 "validate_bitrate rejects negative"
-    validate_bitrate "101"; assert_equal $? 1 "validate_bitrate rejects > 100"
-    validate_bitrate "abc"; assert_equal $? 1 "validate_bitrate rejects non-numeric"
-    validate_bitrate "5.5.5"; assert_equal $? 1 "validate_bitrate rejects multiple decimals"
-    validate_bitrate " 5 "; assert_equal $? 1 "validate_bitrate rejects whitespace (should be sanitized first)"
+    # Invalid bitrates (these should return 1/false) - use set +e so return 1 doesn't exit
+    local exit_code
+    set +e
+    validate_bitrate ""; exit_code=$?; set -e; assert_equal $exit_code 1 "validate_bitrate rejects empty string"
+    set +e; validate_bitrate "0"; exit_code=$?; set -e; assert_equal $exit_code 1 "validate_bitrate rejects zero"
+    set +e; validate_bitrate "-5"; exit_code=$?; set -e; assert_equal $exit_code 1 "validate_bitrate rejects negative"
+    set +e; validate_bitrate "101"; exit_code=$?; set -e; assert_equal $exit_code 1 "validate_bitrate rejects > 100"
+    set +e; validate_bitrate "abc"; exit_code=$?; set -e; assert_equal $exit_code 1 "validate_bitrate rejects non-numeric"
+    set +e; validate_bitrate "5.5.5"; exit_code=$?; set -e; assert_equal $exit_code 1 "validate_bitrate rejects multiple decimals"
+    set +e; validate_bitrate " 5 "; exit_code=$?; set -e; assert_equal $exit_code 1 "validate_bitrate rejects whitespace (should be sanitized first)"
 }
 test_validate_bitrate
 
@@ -1773,12 +1775,12 @@ test_validate_depth() {
     validate_depth "10"; assert_equal $? 0 "validate_depth accepts 10"
     validate_depth "100"; assert_equal $? 0 "validate_depth accepts 100"
     
-    # Invalid cases
-    validate_depth ""; assert_equal $? 1 "validate_depth rejects empty string"
-    validate_depth "-1"; assert_equal $? 1 "validate_depth rejects negative"
-    validate_depth "abc"; assert_equal $? 1 "validate_depth rejects non-numeric"
-    validate_depth "5.5"; assert_equal $? 1 "validate_depth rejects decimals"
-    validate_depth " 5 "; assert_equal $? 1 "validate_depth rejects whitespace (should be sanitized first)"
+    # Invalid cases - use set +e so return 1 doesn't exit
+    set +e; validate_depth ""; exit_code=$?; set -e; assert_equal $exit_code 1 "validate_depth rejects empty string"
+    set +e; validate_depth "-1"; exit_code=$?; set -e; assert_equal $exit_code 1 "validate_depth rejects negative"
+    set +e; validate_depth "abc"; exit_code=$?; set -e; assert_equal $exit_code 1 "validate_depth rejects non-numeric"
+    set +e; validate_depth "5.5"; exit_code=$?; set -e; assert_equal $exit_code 1 "validate_depth rejects decimals"
+    set +e; validate_depth " 5 "; exit_code=$?; set -e; assert_equal $exit_code 1 "validate_depth rejects whitespace (should be sanitized first)"
 }
 test_validate_depth
 
@@ -1976,7 +1978,8 @@ test_preprocess_with_override() {
     exit_code=$?
     set -e
     
-    assert_exit_code $exit_code 0 "preprocess_non_quicklook_files: completes with override"
+    # preprocess returns remuxed count (0 = no files, 1 = one file remuxed, etc.)
+    assert_exit_code $exit_code 1 "preprocess_non_quicklook_files: completes with override (exit 1 = 1 file remuxed)"
     # Should use override target (9.5) instead of resolution-based target (8)
     # File is at 9.5 Mbps, which is within tolerance of override target (9.5)
     assert_not_empty "$(echo "$output" | grep -i "remuxing\|remuxed" || true)" "preprocess_non_quicklook_files: processes file with override"
