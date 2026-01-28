@@ -501,6 +501,12 @@ The script uses two methods to determine bitrate:
 - Configurable target bitrates per resolution
 - SDR vs HDR bitrate differentiation
 - Configurable constant quality start ranges
+- **Border detection and cropping**: Enhance the main script to use border detection to automatically cut black bars (letterboxing/pillarboxing) out of reencoded files. This would improve file size efficiency by removing unnecessary black borders before transcoding, ensuring the encoded video only contains the actual content area. Implementation considerations:
+  - Use FFmpeg's `cropdetect` filter to detect black borders automatically
+  - Apply cropping filter during transcoding to remove detected borders
+  - Preserve aspect ratio and ensure cropping doesn't affect video quality
+  - Handle edge cases where border detection might incorrectly identify content as borders
+  - Make cropping optional via command-line flag (e.g., `--crop-borders` or `-c`) to allow users to preserve original framing when desired
 
 ### Smart Pre-processing
 - Added early exit check: If source video is already within ±5% of target bitrate OR if source bitrate is below target, the script exits immediately with a helpful message, avoiding unnecessary transcoding work
