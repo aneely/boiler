@@ -160,6 +160,7 @@ The script is modularized into the following function categories:
   - Skips original files if an encoded version exists in the same directory (checked via `has_encoded_version()`)
   - Uses `extract_original_filename()` to reverse-engineer original filenames from encoded filenames
   - `find_all_video_files()` discovers processable files, while `find_skipped_video_files()` identifies skipped files for user feedback
+- **Predictable processing order**: File lists are sorted alphabetically (`sort`) so processing order is consistent across runs (main pass, preprocessing, and skipped-file display)
 - Output files are created in the same directory as their source files
 
 #### Resolution Detection
@@ -312,7 +313,18 @@ The script uses two methods to determine bitrate:
 
 ## Current Session Status
 
-### Latest Session (Remuxed-but-Never-Transcoded Edge Case)
+### Latest Session (Predictable File Processing Order)
+
+**Predictable file processing order:** File lists are now sorted alphabetically so processing order is consistent across runs and batch processing is deterministic.
+
+**Changes:**
+- **find_all_video_files()**: Output is sorted via `printf '%s\n' "${video_files[@]}" | sort` before printing. Main loop and any consumer see files in alphabetical order.
+- **find_skipped_video_files()**: Output is sorted the same way for consistent display order.
+- **preprocess_non_quicklook_files()**: The `files_to_check` array is sorted (same method) before the processing loop so preprocessing order is deterministic.
+
+**Testing:** Added `test_find_all_video_files_sorted_order()` which creates a temp dir with `c.mp4`, `a.mp4`, `b.mp4`, runs `find_all_video_files`, and asserts output is `./a.mp4`, `./b.mp4`, `./c.mp4`. Test count: 259 (all passing).
+
+### Previous Session (Remuxed-but-Never-Transcoded Edge Case)
 
 **Edge case:** Some files get remuxed (preprocessing or remux-only.sh) but are never transcoded (at/below target, so they only get remuxed with `.orig.` naming). If a remuxed file did not get the `.orig.` marker or was written to a different directory than the source, running cleanup-originals on that directory could delete the remuxed file because it has no transcoding markers and no companion transcoded file.
 

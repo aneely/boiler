@@ -388,10 +388,8 @@ find_all_video_files() {
         fi
     done
 
-    # Print each file on a separate line
-    for file in "${video_files[@]}"; do
-        echo "$file"
-    done
+    # Print each file on a separate line in sorted order (predictable processing order)
+    printf '%s\n' "${video_files[@]}" | sort
 }
 
 # Find all skipped video files (files with .hbrk., .fmpg., or .orig. markers)
@@ -425,10 +423,8 @@ find_skipped_video_files() {
         fi
     done
 
-    # Print each file on a separate line
-    for file in "${skipped_files[@]}"; do
-        echo "$file"
-    done
+    # Print each file on a separate line in sorted order (predictable order for display)
+    printf '%s\n' "${skipped_files[@]}" | sort
 }
 
 # Find first video file in current directory (for backward compatibility)
@@ -1266,6 +1262,13 @@ preprocess_non_quicklook_files() {
     if [ ${#files_to_check[@]} -eq 0 ]; then
         return 0  # No files to process
     fi
+    
+    # Sort for predictable processing order
+    local sorted_files=()
+    while IFS= read -r line; do
+        sorted_files+=("$line")
+    done < <(printf '%s\n' "${files_to_check[@]}" | sort)
+    files_to_check=("${sorted_files[@]}")
     
     info "Pre-processing: Checking ${#files_to_check[@]} non-QuickLook compatible file(s) for remuxing..."
     

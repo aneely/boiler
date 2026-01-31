@@ -110,7 +110,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
   - **Documentation**: Update help text and README to explain the depth flag
   - **Helper script consistency**: Updated `cleanup-originals.sh` and `remux-only.sh` to support the same depth traversal capability
   This provides flexibility for users with deeply nested directory structures while maintaining the current default behavior. (Implemented)
-- [ ] **Predictable file processing order**: Iterate over files in a predictable order (e.g., alphabetical) to ensure consistent behavior across runs and make batch processing more deterministic.
+- [x] **Predictable file processing order**: Iterate over files in a predictable order (e.g., alphabetical) to ensure consistent behavior across runs and make batch processing more deterministic. (Implemented: `find_all_video_files()` and `find_skipped_video_files()` output sorted via `sort`; `preprocess_non_quicklook_files()` sorts its file list before iterating.)
 
 ### File Detection and Naming
 

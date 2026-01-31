@@ -856,6 +856,28 @@ test_find_all_video_files_depth
 
 echo ""
 
+# Test find_all_video_files returns files in sorted order (predictable processing order)
+echo "Testing find_all_video_files() sorted order..."
+test_find_all_video_files_sorted_order() {
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    # Create files in non-alphabetical order so find's order would be undefined without sort
+    touch "$temp_dir/c.mp4" "$temp_dir/a.mp4" "$temp_dir/b.mp4"
+    
+    local output
+    output=$(bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; find_all_video_files")
+    local expected="./a.mp4
+./b.mp4
+./c.mp4"
+    
+    assert_equal "$output" "$expected" "find_all_video_files: returns files in sorted (alphabetical) order"
+    
+    rm -rf "$temp_dir"
+}
+test_find_all_video_files_sorted_order
+
+echo ""
+
 # Test extract_original_filename() and matching logic
 echo "Testing extract_original_filename() and original/encoded matching..."
 test_extract_and_matching() {
