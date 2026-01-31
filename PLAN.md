@@ -33,7 +33,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Early exit check: Skip transcoding if source video is already within ±5% of target bitrate
 - [x] MKV remuxing: Automatically remuxes MKV files that are within tolerance or below target to MP4 with QuickLook compatibility (copies streams without transcoding)
 - [x] Helper scripts for testing (copy test videos, cleanup, remux-only, cleanup-originals)
-- [x] Comprehensive test suite with function mocking (212+ tests, CI/CD ready)
+- [x] Comprehensive test suite with function mocking (259 tests, CI/CD ready)
 - [x] Second pass transcoding: Automatically performs a second transcoding pass with adjusted quality if the first pass bitrate is outside tolerance range
 - [x] Preprocessing pass for non-QuickLook formats: Automatically remuxes non-QuickLook compatible files (mkv, wmv, avi, webm, flv) that are within tolerance or below target, including `.orig.` files, before main file discovery
 - [x] Codec compatibility checking: Checks codec compatibility before remuxing to prevent failures with incompatible codecs (e.g., WMV3)
@@ -61,7 +61,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - `copy-1080p-test.sh` - Copies 1080p test video to current directory
 - `copy-4k-test.sh` - Copies 4K test video to current directory
 - `cleanup-mp4.sh` - Removes all .mp4 files from project root directory
-- `cleanup-originals.sh` - Removes all `.orig.` marked video files from current directory and subdirectories (moves to trash). Supports `-L`/`--max-depth` flag for configurable depth traversal.
+- `cleanup-originals.sh` - Moves to trash video files that do not have transcoding markers (`.fmpg.`, `.orig.`, `.hbrk.`) — i.e. original/source files — from current directory and subdirectories. Supports `-L`/`--max-depth` flag for configurable depth traversal.
 - `remux-only.sh` - Standalone script for remuxing video files to MP4 with `.orig.{bitrate}.Mbps` naming. Only remuxes (no transcoding) - converts container format for QuickLook compatibility. Processes non-QuickLook compatible formats (mkv, wmv, avi, webm, flv) and includes codec compatibility checking. Supports `-L`/`--max-depth` flag for configurable depth traversal.
 
 ### Known Issues / Recent Changes
@@ -71,7 +71,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - **Multi-point sampling**: Implemented to address issue where single sample from beginning didn't accurately predict full video bitrate.
 - **No iteration limit**: Removed iteration limit safeguard - loop continues until convergence or quality bounds (0-100) are reached.
 - **Code refactoring**: Consolidated duplicate bitrate measurement logic into generic `measure_bitrate()` function. Extracted tolerance checking into `is_within_tolerance()` helper. Added `sanitize_value()` helper for consistent value sanitization. Renamed `find_optimal_bitrate()` to `find_optimal_quality()` to reflect constant quality mode.
-- **Testing infrastructure**: Implemented comprehensive test suite with function mocking using file-based call tracking. 212+ tests covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second and third pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` and `calculate_interpolated_quality()` unit tests, codec compatibility checking, configurable depth traversal, command-line argument parsing, and error handling tests). Tests work without FFmpeg/ffprobe installation, enabling CI/CD workflows. Uses temporary files for call tracking to work around bash subshell limitations.
+- **Testing infrastructure**: Implemented comprehensive test suite with function mocking using file-based call tracking. 259 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second and third pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` and `calculate_interpolated_quality()` unit tests, codec compatibility checking, configurable depth traversal, command-line argument parsing, and error handling tests). Tests work without FFmpeg/ffprobe installation, enabling CI/CD workflows. Uses temporary files for call tracking to work around bash subshell limitations.
 - **Sample duration**: Sample duration is set to 60 seconds for better bitrate accuracy. Adaptive sampling logic uses fewer samples for shorter videos (1 sample for videos <120s, 2 samples for 120-179s, 3 samples for ≥180s).
 - **FFmpeg process cleanup**: Signal handling implemented to kill process group on interrupt, but may need verification.
 
@@ -82,15 +82,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] **Skip already optimized files**: Exit early if the source file is already within ±5% of the target bitrate for its resolution. This prevents unnecessary transcoding when the file is already optimized. (Implemented)
 - [x] **MKV remuxing for optimized files**: For MKV files that are already within tolerance or below target bitrate, automatically remux them to MP4 with QuickLook compatibility. This converts the container format without transcoding video/audio streams, improving macOS Finder QuickLook compatibility while preserving quality. Uses `-movflags +faststart` and `-tag:v hvc1` (for HEVC) for optimal QuickLook support. (Implemented)
 - [ ] **Initial pass to identify work**: Perform an initial pass over all discovered video files to capture all potential work and allow short-circuiting logic to filter down to untranscoded files before starting any transcoding. This prevents non-deterministic behavior where a file transcoded close to the target bitrate (but slightly out of tolerance) causes a second run of the script to attempt re-encoding an already good enough encoded file. The initial pass would identify files that are already within tolerance or have encoded versions, ensuring they are properly skipped before any transcoding begins.
-- [ ] **Single-pass remux and transcode**: Ensure that both the remuxing pass and transcoding pass happen in a single script execution, rather than requiring two separate runs. Currently, if a file gets remuxed in the preprocessing pass, it may not be picked up by the main transcoding pass in the same execution, requiring a second run. Implementation considerations:
-  - **Re-scan after preprocessing**: After `preprocess_non_quicklook_files()` completes, re-scan for video files to include newly remuxed MP4 files that may still need transcoding (e.g., files that were remuxed but are above target bitrate)
-  - **Track remuxed files**: Keep track of files that were remuxed during preprocessing and ensure they're included in the main processing pass if they still need transcoding
-  - **File discovery logic**: Ensure `find_all_video_files()` picks up remuxed MP4 files that don't have skip markers (`.fmpg.`, `.orig.`, `.hbrk.`) and are above target bitrate
-  - **Edge cases**: Handle cases where:
-    - A file is remuxed from MKV to MP4 but is still above target bitrate and needs transcoding
-    - A file is remuxed with an `.orig.` marker but the original file still exists and needs transcoding
-    - Multiple files in the same directory where some get remuxed and others need transcoding
-  This would eliminate the need to run the script twice (once for remux, once for transcode) and provide a smoother user experience.
+- [x] **Single-pass remux and transcode**: Ensure that both the remuxing pass and transcoding pass happen in a single script execution, rather than requiring two separate runs. (Implemented.) The current design already achieves this: preprocessing only remuxes (or compatibility-transcodes) files that are within tolerance or below target; those outputs use `.orig.` naming and need no further work. Above-target non-QuickLook files are not touched in preprocessing—they are found by `find_all_video_files()` (called after preprocessing) and transcoded in the main loop in one pass. No second run is required.
 
 ### Batch Processing
 
@@ -210,7 +202,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 ### Development Workflow
 
-- [ ] **Test suite refactoring for speed and independence**: Refactor the test suite to make tests faster and independently runnable. Current test suite (212+ tests) uses a custom framework with function mocking, but tests share state and run sequentially. Potential improvements:
+- [ ] **Test suite refactoring for speed and independence**: Refactor the test suite to make tests faster and independently runnable. Current test suite (259 tests) uses a custom framework with function mocking, but tests share state and run sequentially. Potential improvements:
   - **Independent test execution**: Make each test function completely isolated with no shared state (currently uses global variables and file-based call tracking that persists across tests)
   - **Parallel test execution**: Enable running tests in parallel to reduce total execution time (currently runs sequentially)
   - **Selective test execution**: Allow running individual tests or test groups without running the entire suite
@@ -225,7 +217,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
   - **Implementation considerations**:
     - Preserve existing function mocking approach (works well for FFmpeg/ffprobe dependencies)
     - Maintain compatibility with CI/CD workflows (currently works without FFmpeg installation)
-    - Ensure test coverage remains comprehensive (212+ tests covering utility functions, integration tests, error handling)
+    - Ensure test coverage remains comprehensive (259 tests covering utility functions, integration tests, error handling)
     - Consider hybrid approach: use bats for structure but keep custom mocking for FFmpeg/ffprobe functions
 - [ ] **Account-wide Cursor configuration for "remember what you need to" convention**: Explore options for making the PROJECT-CONTEXT.md/PLAN.md/README.md update convention reusable across projects. Options to investigate:
   - Custom command template in `~/.cursor/command-templates/` that can be copied to each project's `.cursor/commands/` directory

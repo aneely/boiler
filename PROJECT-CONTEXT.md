@@ -24,7 +24,20 @@ This project provides a simplified command-line interface for transcoding video 
 - Questions are for learning and discussion, not automatic implementation
 - If unsure whether a request is informational or an implementation request, treat it as informational and ask for clarification
 
+**When the user talks about working on future enhancements but does not specify which item:**
+- List what is left undone (from PLAN.md and any from this document).
+- Decide together which one to work on.
+- Do not implement anything until one item is chosen.
+
 This ensures the user maintains control over the development direction and can make informed decisions about which solutions best fit their needs.
+
+### Reverting Changes
+
+**Prefer version control over manual rollback.** To discard uncommitted changes and return the working directory to a known good state, use git:
+- `git restore <file>...` or `git checkout -- <file>...` to discard changes in specific files.
+- `git restore .` or `git checkout -- .` to discard all uncommitted changes in the working directory.
+
+Do not manually edit or revert files line-by-line to undo changes. Using git to revert is simpler, faster, and avoids consuming tokens on repetitive edits.
 
 ### Testing Before Committing
 
@@ -33,7 +46,7 @@ This ensures the user maintains control over the development direction and can m
 **Before committing ANY changes, you MUST:**
 1. **Run the test suite**: Execute `bash test_boiler.sh` and verify it completes successfully
 2. **Verify exit code**: The test suite MUST exit with code 0 (all tests passing)
-3. **Check test output**: Review the test summary to confirm all tests passed (e.g., "Passed: 212, Failed: 0")
+3. **Check test output**: Review the test summary to confirm all tests passed (e.g., "Passed: 259, Failed: 0")
 4. **Fix any failures**: If ANY tests fail, you MUST fix the issues before committing
 5. **NEVER commit without running tests**: Do not skip this step, even for minor changes
 
@@ -46,6 +59,10 @@ The test suite verifies:
 - Mocked functions behave as expected
 
 This ensures code quality and prevents regressions from being committed to the repository.
+
+### Commit Messages
+
+**Do not add `Co-authored-by:` or any other trailers to commit messages** unless the user explicitly asks for them. Use only the commit message body (subject and optional body) that the user or the task implies; do not append attribution lines.
 
 ### Documentation Update Directive
 
@@ -234,7 +251,7 @@ The script uses an iterative approach to find the optimal quality setting using 
 ```
 boiler/
 ├── boiler.sh                    # Main transcoding script
-├── test_boiler.sh               # Test suite with function mocking (212+ tests)
+├── test_boiler.sh               # Test suite with function mocking (259 tests)
 ├── copy-1080p-test.sh          # Helper: Copy 1080p test video to current directory
 ├── copy-4k-test.sh              # Helper: Copy 4K test video to current directory
 ├── cleanup-mp4.sh               # Helper: Remove all .mp4 files from project root
@@ -290,7 +307,7 @@ The script uses two methods to determine bitrate:
 ### Testing Infrastructure
 
 **Test Suite (`test_boiler.sh`):**
-- **212+ tests** covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second and third pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` and `calculate_interpolated_quality()` unit tests, codec compatibility checking, configurable depth traversal, command-line argument parsing, and error handling tests)
+- **259 tests** covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second and third pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` and `calculate_interpolated_quality()` unit tests, codec compatibility checking, configurable depth traversal, command-line argument parsing, and error handling tests)
 - **Function mocking approach**: Uses file-based call tracking to mock FFmpeg/ffprobe-dependent functions without requiring actual video files or FFmpeg installation
 - **Mocked functions**:
   - `get_video_resolution()` - Returns configurable resolution (default: 1080p)
@@ -362,7 +379,7 @@ The script uses two methods to determine bitrate:
 - Updated `show_usage()` with depth flag documentation and examples
 - Added comprehensive tests for depth functionality (validate_depth, parse_arguments with depth flags, find_all_video_files with various depths)
 - Enhanced `cleanup-originals.sh` with the same configurable depth capability for consistency
-- Total test count: 212+ tests (up from 188+)
+- Total test count: 259 tests (up from 188+)
 - All tests passing
 
 **Implementation Details:**

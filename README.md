@@ -194,12 +194,12 @@ For testing and development, helper scripts are available:
 - **`./copy-1080p-test.sh`** - Copies the 1080p test video to the current directory
 - **`./copy-4k-test.sh`** - Copies the 4K test video to the current directory  
 - **`./cleanup-mp4.sh`** - Removes all .mp4 files from the project root directory
-- **`./cleanup-originals.sh`** - Removes all `.orig.` marked video files from current directory and subdirectories (moves to trash). Supports `-L`/`--max-depth` flag for configurable depth traversal.
+- **`./cleanup-originals.sh`** - Moves to trash video files that do not have transcoding markers (`.fmpg.`, `.orig.`, `.hbrk.`) — i.e. original/source files — from current directory and subdirectories. Supports `-L`/`--max-depth` flag for configurable depth traversal.
 - **`./remux-only.sh`** - Standalone script for remuxing video files to MP4 with `.orig.{bitrate}.Mbps` naming. Only remuxes (no transcoding) - converts container format for QuickLook compatibility. Processes non-QuickLook compatible formats (mkv, wmv, avi, webm, flv) and includes codec compatibility checking. Supports `-L`/`--max-depth` flag for configurable depth traversal.
 
 ### Running Tests
 
-The project includes a comprehensive test suite (`test_boiler.sh`) with 212+ tests covering utility functions, mocked FFmpeg/ffprobe functions, and full integration tests (including second and third pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` and `calculate_interpolated_quality()` unit tests, codec compatibility checking, configurable depth traversal, command-line argument parsing, and error handling tests). The test suite uses function mocking to avoid requiring actual video files or FFmpeg installation, making it suitable for CI/CD environments.
+The project includes a comprehensive test suite (`test_boiler.sh`) with 259 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full integration tests (including second and third pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` and `calculate_interpolated_quality()` unit tests, codec compatibility checking, configurable depth traversal, command-line argument parsing, and error handling tests). The test suite uses function mocking to avoid requiring actual video files or FFmpeg installation, making it suitable for CI/CD environments.
 
 To run the test suite:
 ```bash
