@@ -312,7 +312,17 @@ The script uses two methods to determine bitrate:
 
 ## Current Session Status
 
-### Latest Session (Remux-Only Script and Future Enhancements)
+### Latest Session (Remuxed-but-Never-Transcoded Edge Case)
+
+**Edge case:** Some files get remuxed (preprocessing or remux-only.sh) but are never transcoded (at/below target, so they only get remuxed with `.orig.` naming). If a remuxed file did not get the `.orig.` marker or was written to a different directory than the source, running cleanup-originals on that directory could delete the remuxed file because it has no transcoding markers and no companion transcoded file.
+
+**Fix applied:**
+- **boiler.sh**: `handle_non_quicklook_at_target()` now writes the remuxed output in the same directory as the source. Output path is built with `dirname "$video_file"` so that e.g. `videos/movie.mkv` becomes `videos/movie.orig.{bitrate}.Mbps.mp4` instead of `movie.orig.{bitrate}.Mbps.mp4` in the current working directory. Remuxed files therefore stay next to the original path and always carry the `.orig.` marker, so cleanup-originals correctly skips them.
+
+**Documented in PLAN.md:**
+- Future enhancement: "Remuxed-but-never-transcoded vs. cleanup-originals" with options to ensure all remuxed outputs use `.orig.` and same-dir paths, and optionally to have cleanup-originals only treat a file as "original" when an encoded/remuxed companion exists in the same directory.
+
+### Previous Session (Remux-Only Script and Future Enhancements)
 
 **Remux-Only Script:**
 - Created `remux-only.sh` - Standalone script for remuxing video files to MP4 with `.orig.{bitrate}.Mbps` naming

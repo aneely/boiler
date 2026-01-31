@@ -619,8 +619,16 @@ handle_non_quicklook_at_target() {
         # Codec is compatible - try remuxing
         info "File is ${format_upper} format. Remuxing to MP4 with QuickLook compatibility (copying streams, no transcoding)..."
         
-        # Generate MP4 output filename: {base}.orig.{bitrate}.Mbps.mp4
-        local output_file="${BASE_NAME}.orig.${source_bitrate_mbps}.Mbps.mp4"
+        # Generate MP4 output filename: {base}.orig.{bitrate}.Mbps.mp4 (same directory as source)
+        local dirname=$(dirname "$video_file")
+        local output_file
+        if [ "$dirname" != "." ]; then
+            # Use basename of BASE_NAME so we don't duplicate path (e.g. subdir/video.mkv -> subdir/video.orig.X.Mbps.mp4)
+            local base_only="${BASE_NAME##*/}"
+            output_file="${dirname}/${base_only}.orig.${source_bitrate_mbps}.Mbps.mp4"
+        else
+            output_file="${BASE_NAME}.orig.${source_bitrate_mbps}.Mbps.mp4"
+        fi
         
         # Remux to MP4
         if remux_to_mp4 "$video_file" "$output_file"; then

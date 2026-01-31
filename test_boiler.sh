@@ -1011,6 +1011,41 @@ test_mocked_functions
 
 echo ""
 
+# Test handle_non_quicklook_at_target() writes remuxed output next to source (subdirectory)
+echo "Testing handle_non_quicklook_at_target() output path (subdirectory)..."
+test_handle_non_quicklook_at_target_subdir_output() {
+    local temp_dir
+    temp_dir=$(mktemp -d 2>/dev/null || echo "/tmp/boiler_test_subdir_$$")
+    mkdir -p "${temp_dir}/subdir"
+    touch "${temp_dir}/subdir/video.mkv"
+    
+    local saved_pwd
+    saved_pwd=$(pwd)
+    cd "$temp_dir" || exit 1
+    
+    reset_call_tracking
+    MOCK_VIDEO_CODEC="h264"
+    needs_transcode=0
+    handle_non_quicklook_at_target "subdir/video.mkv" "8.50" "needs_transcode"
+    local exit_code=$?
+    
+    cd "$saved_pwd" || exit 1
+    rm -rf "$temp_dir"
+    unset MOCK_VIDEO_CODEC
+    
+    assert_exit_code $exit_code 0 "handle_non_quicklook_at_target: subdir source succeeds"
+    assert_equal "$(count_calls "$REMUX_CALLS_FILE")" "1" "handle_non_quicklook_at_target: remux_to_mp4 called once for subdir source"
+    local call
+    call=$(get_first_call "$REMUX_CALLS_FILE")
+    local input_path="${call%%|*}"
+    local output_path="${call#*|}"
+    assert_equal "$input_path" "subdir/video.mkv" "handle_non_quicklook_at_target: remux input is subdir path"
+    assert_equal "$output_path" "subdir/video.orig.8.50.Mbps.mp4" "handle_non_quicklook_at_target: remux output is next to source (same directory)"
+}
+test_handle_non_quicklook_at_target_subdir_output
+
+echo ""
+
 # Test calculate_adjusted_quality()
 echo "Testing calculate_adjusted_quality()..."
 test_calculate_adjusted_quality() {

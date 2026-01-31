@@ -136,6 +136,9 @@ Create a simplified command-line tool for video transcoding on macOS that:
   - **Warning message**: When force flag is used, display a clear warning that already-processed files will be re-processed
   - **Documentation**: Update help text to explain the force flag and its use cases
   This would provide flexibility for edge cases where re-processing is needed while maintaining the default safe behavior of skipping already-processed files.
+- [ ] **Remuxed-but-never-transcoded vs. cleanup-originals**: Edge case: some files get remuxed in preprocessing (or by remux-only.sh) but are never transcoded (e.g. they are at/below target so they only get remuxed with `.orig.` naming). If a remuxed file ever does not get the `.orig.` marker (e.g. wrong output path, or a different tool), or if the remuxed file ends up in a different directory than the original, then when the user runs cleanup-originals on that directory, the file can be deleted because it has no transcoding markers and no companion transcoded file. Implementation considerations:
+  - **boiler.sh**: Ensure every remuxed output always has `.orig.` in the filename and is written in the same directory as the source (e.g. `handle_non_quicklook_at_target` should prepend `dirname` to the output path so subdirectory sources produce subdirectory outputs).
+  - **cleanup-originals**: Optionally, only treat a file as "original" (candidate for deletion) if there is an encoded/remuxed companion in the same directory (e.g. same base name with `.fmpg.`, `.orig.`, or `.hbrk.`), so that remux-only directories are not over-cleaned. Alternatively, document that remuxed files must always carry the `.orig.` marker so cleanup-originals correctly skips them.
 
 ### Quality Control and Optimization
 
