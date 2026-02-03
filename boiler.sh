@@ -574,10 +574,29 @@ get_video_codec() {
 }
 
 # Handle non-QuickLook format files that are at/below target bitrate
-# Checks codec compatibility and either remuxes or sets up transcoding
-# Arguments: video_file, source_bitrate_mbps, needs_transcode_flag_ref (name of variable to set)
-# Returns: 0 if handled (remuxed or set up for transcoding), 1 if error
-# Sets needs_transcode_flag_ref=1 if transcoding needed, 0 otherwise
+# Handle non-QuickLook format files at or below target bitrate
+#
+# Checks codec compatibility for non-QuickLook files (MKV, WMV, AVI, WEBM, FLV) and:
+#   - If codec is MP4-compatible: remuxes to MP4 (copy streams, no transcoding)
+#   - If codec is incompatible: sets up transcoding flag for compatibility transcode
+#
+# Arguments:
+#   $1 - Video file path
+#   $2 - Source bitrate in Mbps
+#   $3 - Name of variable to set as flag (pass by reference pattern)
+#
+# Side Effects:
+#   Sets variable named by $3:
+#     - 0 if remuxed (no transcoding needed)
+#     - 1 if transcoding needed (incompatible codec)
+#
+# Returns:
+#   0 if handled successfully, 1 if error
+#
+# Supported codecs for remuxing: h264, hevc, mpeg4, vp9 (in MP4)
+# Incompatible codecs requiring transcoding: WMV3, etc.
+#
+# Used by: preprocess_non_quicklook_files, transcode_video (within tolerance case)
 handle_non_quicklook_at_target() {
     local video_file="$1"
     local source_bitrate_mbps="$2"
@@ -732,8 +751,25 @@ is_within_tolerance() {
     fi
 }
 
-# Calculate target bitrate based on resolution
-# Returns: TARGET_BITRATE_MBPS TARGET_BITRATE_BPS (via global variables)
+# Calculate target bitrate based on video resolution
+#
+# Arguments:
+#   $1 - Video resolution height in pixels
+#
+# Side Effects:
+#   Sets global variables:
+#     - TARGET_BITRATE_MBPS: Target bitrate in Mbps
+#     - TARGET_BITRATE_BPS: Target bitrate in bits per second
+#
+# Resolution tiers and targets:
+#   2160p (4K): ≥2160px height → 11 Mbps
+#   1080p (Full HD): ≥1080px height → 8 Mbps
+#   720p (HD): ≥720px height → 5 Mbps
+#   480p (SD): ≥480px height → 2.5 Mbps
+#   Below 480p: Falls back to 480p settings (2.5 Mbps)
+#
+# Note: Uses height-based detection. See docs/TECHNICAL.md for
+# discussion on aspect ratio handling considerations.
 calculate_target_bitrate() {
     local resolution="$1"
     
@@ -760,9 +796,30 @@ calculate_target_bitrate() {
     fi
 }
 
-# Calculate sample points: beginning (10%), middle (50%), and end (90%)
-# Adjusts sample positions for shorter videos that can't fit three non-overlapping samples
-# Returns: SAMPLE_START_1 SAMPLE_START_2 SAMPLE_START_3 SAMPLE_COUNT (via global variables)
+# Calculate sample points for multi-point bitrate estimation
+#
+# Determines how many 60-second samples can fit in the video and positions them
+# at representative points (beginning, middle, end) for accurate bitrate estimation.
+#
+# Arguments:
+#   $1 - Video duration in seconds
+#
+# Side Effects:
+#   Sets global variables:
+#     - SAMPLE_START_1: Start time (seconds) for first sample, or 0 if <60s
+#     - SAMPLE_START_2: Start time for second sample, or empty if not used
+#     - SAMPLE_START_3: Start time for third sample, or empty if not used
+#     - SAMPLE_COUNT: Number of samples (1, 2, or 3)
+#     - SAMPLE_DURATION: Duration of each sample in seconds
+#
+# Sampling strategy by video duration:
+#   < 60s: 1 sample (entire video)
+#   60-119s: 1 sample at beginning
+#   120-179s: 2 samples (beginning and end)
+#   ≥ 180s: 3 samples at ~10%, ~50%, ~90% positions
+#
+# Rationale: Longer samples provide more accurate bitrate measurements by averaging
+# out variation. 60 seconds balances accuracy with iteration time. See docs/TECHNICAL.md
 calculate_sample_points() {
     local video_duration="$1"
     local sample_duration=60
@@ -844,7 +901,27 @@ calculate_sample_points() {
 }
 
 # Transcode a sample from a specific point in the video
-# Uses input seeking (-ss before -i) for faster seeking performance
+#
+# Creates a short sample from the video using constant quality mode for bitrate estimation.
+# Uses input seeking (-ss before -i) for faster performance, especially for later samples.
+#
+# Arguments:
+#   $1 - Video file path
+#   $2 - Sample start time in seconds
+#   $3 - Sample duration in seconds
+#   $4 - Quality value (0-100) for constant quality mode
+#   $5 - Output file path for the sample
+#
+# Encoding settings:
+#   - Video: HEVC via VideoToolbox (-c:v hevc_videotoolbox)
+#   - Quality: Constant quality mode (-q:v, 0-100 scale)
+#   - Audio: Copy without transcoding (-c:a copy)
+#   - Container: MP4 with faststart for QuickLook (-movflags +faststart)
+#
+# Note: Uses input seeking (-ss before -i) which is faster than output seeking
+# but means interrupting the script may leave FFmpeg processes running
+#
+# See docs/TECHNICAL.md for discussion on QuickLook compatibility
 transcode_sample() {
     local video_file="$1"
     local sample_start="$2"
@@ -872,7 +949,33 @@ measure_sample_bitrate() {
 }
 
 # Find optimal quality setting through iterative sampling
-# Uses constant quality mode (-q:v) and adjusts quality to hit target bitrate
+#
+# Main optimization loop that iteratively finds the optimal quality setting
+# by transcoding samples from multiple points and adjusting quality to hit target bitrate.
+# Uses constant quality mode (-q:v) with VideoToolbox.
+#
+# Arguments:
+#   $1 - Video file path
+#   $2 - Target bitrate in bits per second
+#   $3 - Lower bound for quality value (unused, reserved for future constraints)
+#   $4 - Upper bound for quality value (unused, reserved for future constraints)
+#   $5 - Sample 1 start time (seconds)
+#   $6 - Sample 2 start time (seconds, may be empty)
+#   $7 - Sample 3 start time (seconds, may be empty)
+#   $8 - Sample duration in seconds
+#
+# Returns:
+#   OPTIMAL_QUALITY: Quality value (0-100) that produces bitrate closest to target
+#
+# Algorithm:
+#   1. Start with quality=60 (VideoToolbox -q:v scale: higher=higher quality/bitrate)
+#   2. Transcode samples from multiple points
+#   3. Calculate average bitrate across all samples
+#   4. Use proportional adjustment (step size 1-10 based on distance from target)
+#   5. Repeat until bitrate within ±5% tolerance or oscillation detected
+#   6. Return best quality value from history if oscillation occurs
+#
+# See docs/TECHNICAL.md for detailed algorithm documentation
 find_optimal_quality() {
     local video_file="$1"
     local target_bitrate_bps="$2"
@@ -1095,9 +1198,29 @@ find_optimal_quality() {
 }
 
 # Calculate adjusted quality value based on actual bitrate vs target bitrate
-# Uses the same proportional adjustment algorithm as find_optimal_quality
-# Arguments: current_quality, actual_bitrate_bps, target_bitrate_bps
-# Returns: adjusted quality value
+#
+# Implements proportional adjustment algorithm for multi-pass transcoding.
+# Uses the same adjustment logic as find_optimal_quality for consistency.
+#
+# Arguments:
+#   $1 - Current quality value (0-100)
+#   $2 - Actual bitrate in bits per second
+#   $3 - Target bitrate in bits per second
+#
+# Returns:
+#   Adjusted quality value (echoed to stdout)
+#
+# Algorithm:
+#   If actual < target: ratio = actual/target, distance = 1 - ratio
+#                       adjustment = 1 + (10 - 1) * distance, rounded
+#                       new_quality = current + adjustment
+#   If actual > target: ratio = actual/target, distance = min(ratio - 1, 1.0)
+#                       adjustment = 1 + (10 - 1) * distance, rounded  
+#                       new_quality = current - adjustment
+#
+# Bounds: Quality clamped to [0, 100]
+#
+# Used for: Second pass transcoding when first pass is outside tolerance
 calculate_adjusted_quality() {
     local current_quality=$(sanitize_value "$1")
     local actual_bitrate_bps=$(sanitize_value "$2")
@@ -1152,10 +1275,31 @@ calculate_adjusted_quality() {
     echo "$current_quality"
 }
 
-# Calculate quality using linear interpolation between two known points
-# Arguments: quality1, bitrate1_bps, quality2, bitrate2_bps, target_bitrate_bps
-# Returns: interpolated quality value
-# Uses linear interpolation: quality = quality2 + (quality1 - quality2) * (target - bitrate2) / (bitrate1 - bitrate2)
+# Calculate quality using linear interpolation between two known data points
+#
+# Addresses overcorrection issues in third pass transcoding where the proportional
+# adjustment algorithm overcorrects due to non-linear quality-bitrate relationship.
+#
+# Arguments:
+#   $1 - Quality value from first pass (quality1)
+#   $2 - Bitrate from first pass in bps (bitrate1)
+#   $3 - Quality value from second pass (quality2)
+#   $4 - Bitrate from second pass in bps (bitrate2)
+#   $5 - Target bitrate in bps
+#
+# Returns:
+#   Interpolated quality value (echoed to stdout)
+#
+# Formula:
+#   quality = quality2 + (quality1 - quality2) * (target - bitrate2) / (bitrate1 - bitrate2)
+#
+# Edge case handling:
+#   If bitrates are within 1% of each other (unstable interpolation),
+#   falls back to simple midpoint: (quality1 + quality2) / 2
+#
+# Bounds: Quality clamped to [0, 100]
+#
+# Used for: Third pass transcoding when second pass is still outside tolerance
 calculate_interpolated_quality() {
     local quality1=$(sanitize_value "$1")
     local bitrate1_bps=$(sanitize_value "$2")
@@ -1192,7 +1336,28 @@ calculate_interpolated_quality() {
     echo "$interpolated_quality"
 }
 
-# Transcode full video with optimal settings
+# Transcode the complete video with optimal quality setting
+#
+# Performs full video transcoding using the quality value determined by the
+# optimization algorithm. This is the final transcoding step after sample-based
+# optimization converges.
+#
+# Arguments:
+#   $1 - Input video file path
+#   $2 - Output video file path
+#   $3 - Quality value (0-100) determined by find_optimal_quality()
+#
+# Encoding settings:
+#   - Video: HEVC via VideoToolbox (-c:v hevc_videotoolbox)
+#   - Quality: Constant quality mode (-q:v, 0-100 scale)
+#   - Audio: Copy without transcoding (-c:a copy)
+#   - Container: MP4 with faststart and HEVC tagging
+#     * -movflags +faststart: Metadata at beginning for QuickLook
+#     * -tag:v hvc1: Proper HEVC codec tag for macOS compatibility
+#
+# Note: Uses -loglevel info (not error) to show transcoding progress
+#
+# Used by: transcode_video (all three passes)
 transcode_full_video() {
     local video_file="$1"
     local output_file="$2"
@@ -1216,10 +1381,33 @@ cleanup_samples() {
     rm -f "${video_file%.*}_sample"*.mp4
 }
 
-# Preprocess non-QuickLook compatible files: remux files that are within tolerance or below target
-# This runs before the main file discovery to catch files that should be remuxed
-# Also processes .orig. files (nondestructive remuxing for QuickLook compatibility)
-# Returns: number of files remuxed
+# Preprocessing pass for non-QuickLook compatible files
+#
+# Runs before main file discovery to handle MKV, WMV, AVI, WEBM, FLV files that are
+# already within tolerance or below target bitrate. Remuxes them to MP4 for QuickLook
+# compatibility without transcoding (when codec compatible) or transcodes if codec
+# is incompatible (e.g., WMV3).
+#
+# Also handles .orig. marked files (nondestructive remuxing for QuickLook compatibility).
+#
+# Side Effects:
+#   - Remuxes eligible files to MP4 format
+#   - Removes original files after successful remuxing
+#   - Sets up transcoding for incompatible codecs at source bitrate
+#
+# Returns:
+#   Number of files remuxed (integer)
+#
+# Processing logic:
+#   1. Find all non-QuickLook format files (including .orig. marked files)
+#   2. For each file, check source bitrate
+#   3. If within tolerance or below target:
+#      - Check codec compatibility
+#      - If compatible: remux to MP4 (copy streams)
+#      - If incompatible: transcode at source bitrate for QuickLook compatibility
+#   4. Remove original file after successful processing
+#
+# Supported formats: mkv, wmv, avi, webm, flv
 preprocess_non_quicklook_files() {
     local non_quicklook_extensions=("mkv" "wmv" "avi" "webm" "flv")
     local files_to_check=()
@@ -1471,9 +1659,37 @@ preprocess_non_quicklook_files() {
     return $remuxed_count
 }
 
-# Transcode video function
-# Arguments: [video_file] [target_bitrate_override_mbps] - Optional. If video_file provided, processes that file. Otherwise finds first file in current directory.
-#            If target_bitrate_override_mbps provided, uses that as target bitrate instead of resolution-based target.
+# Main transcoding orchestration function
+#
+# Orchestrates the complete transcoding workflow for a single video file:
+#   1. Analyzes video properties (resolution, duration, bitrate)
+#   2. Determines target bitrate (resolution-based or override)
+#   3. Short-circuits if source already optimized
+#   4. Handles non-QuickLook format compatibility
+#   5. Finds optimal quality via iterative sampling
+#   6. Performs full video transcoding
+#   7. Performs second pass if needed
+#   8. Performs third pass with interpolation if needed
+#
+# Arguments:
+#   $1 - Video file path (optional, if omitted finds first file in current directory)
+#   $2 - Target bitrate override in Mbps (optional, uses resolution-based target if omitted)
+#
+# Returns:
+#   0 on success, 1 on failure
+#
+# Side Effects:
+#   - Creates transcoded output file with naming: {base}.fmpg.{bitrate}.Mbps.{ext}
+#   - Creates .orig. renamed file if source already optimized
+#   - Removes original file after successful transcoding
+#   - Sets VIDEO_FILE global for cleanup handlers
+#
+# Multi-pass strategy:
+#   Pass 1: Sample-based optimization → Full transcode
+#   Pass 2: If outside tolerance, proportional adjustment → Re-transcode
+#   Pass 3: If still outside tolerance, linear interpolation → Final transcode
+#
+# See docs/TECHNICAL.md for detailed algorithm documentation
 transcode_video() {
     local provided_file="$1"
     local target_bitrate_override_mbps="$2"
@@ -1745,7 +1961,29 @@ transcode_video() {
     return 0
 }
 
-# Main function - processes all video files in current directory
+# Main entry point - orchestrates batch processing of all video files
+#
+# Entry point for the transcoding tool. Coordinates the complete workflow:
+#   1. Parses command-line arguments
+#   2. Runs preprocessing pass for non-QuickLook files
+#   3. Discovers all video files in current directory and subdirectories
+#   4. Processes each file through transcode_video()
+#
+# Arguments:
+#   $@ - Command-line arguments (--target-bitrate, --max-depth, --help)
+#
+# Workflow:
+#   - Sets up signal handlers for graceful interrupt handling
+#   - Processes files in sorted alphabetical order (predictable)
+#   - Provides progress indication (file N of M)
+#   - Handles interruptions between files
+#
+# Exit codes:
+#   0 - All files processed successfully
+#   1 - No files found or processing error
+#   130 - Interrupted by user (SIGINT)
+#
+# See docs/TECHNICAL.md for architecture overview
 main() {
     # Parse command-line arguments
     parse_arguments "$@"
