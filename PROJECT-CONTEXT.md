@@ -114,7 +114,7 @@ The tool is implemented as a modular bash script (`boiler.sh`) organized into fo
 
 #### Code Organization
 
-The script is modularized into the following function categories:
+The script is modularized into focused functions (utility, configuration, transcoding, orchestration); main execution flow is in `main()`. Function categories:
 
 **Utility Functions:**
 - `check_requirements()` - Validates that ffmpeg, ffprobe, and bc are installed
@@ -233,20 +233,7 @@ The script uses an iterative approach to find the optimal quality setting using 
 
 #### Encoding Settings
 
-**Current defaults:**
-- **Codec**: HEVC (H.265) via `hevc_videotoolbox` (Apple VideoToolbox hardware acceleration)
-- **Quality control**: Constant quality mode (`-q:v`) - Iteratively adjusts quality value (0-100, higher = higher quality/bitrate) to hit target bitrate
-- **Container**: MP4
-- **Audio**: Copy (no re-encoding)
-- **Output naming**: 
-  - **Transcoded files**: `{base}.fmpg.{actual_bitrate}.Mbps.{ext}` (e.g., `video.fmpg.10.25.Mbps.mp4`)
-    - Actual bitrate is measured after transcoding and included in filename with 2 decimal places
-  - **Files below target**: `{base}.orig.{actual_bitrate}.Mbps.{ext}` (e.g., `video.orig.2.90.Mbps.mp4`)
-    - Files already below target bitrate are renamed to include their actual bitrate without transcoding
-- **Platform**: Optimized for macOS Sequoia (hardware acceleration unlocked)
-- **QuickLook compatibility**: Uses `-movflags +faststart` for sample transcoding; both `-movflags +faststart` and `-tag:v hvc1` for final output to ensure macOS Finder QuickLook support
-- **Second pass transcoding**: If the first full video transcoding produces a bitrate outside the ±5% tolerance range, automatically performs a second transcoding pass with an adjusted quality value calculated using the same proportional adjustment algorithm.
-- **Third pass with linear interpolation**: If the second pass bitrate is still outside tolerance, automatically performs a third transcoding pass using linear interpolation between the first and second pass data points to calculate a more accurate quality value. This addresses overcorrection issues and ensures the final output is as close to the target bitrate as possible.
+HEVC via `hevc_videotoolbox`, constant quality `-q:v` (0–100). Output naming: `{base}.fmpg.{actual_bitrate}.Mbps.{ext}` for transcoded; `{base}.orig.{actual_bitrate}.Mbps.{ext}` for below-target. QuickLook: `-movflags +faststart` and `-tag:v hvc1` on final output. Second/third pass behavior is described in Quality Optimization Algorithm above. Full user-facing defaults: see README.
 
 ### Dependencies
 
@@ -272,7 +259,7 @@ boiler/
 ├── PLAN.md                      # Development roadmap
 ├── README.md                    # User documentation
 ├── plans/                       # Detailed planning documents
-│   └── TEST-REFACTOR-PLAN.md    # Test suite refactoring plan and results
+│   └── (other plan files)
 ├── tests/                       # Bats test suite (217 tests, ~16s parallel)
 │   ├── helpers/                 # Shared test utilities
 │   │   ├── setup.bash           # Common test setup
@@ -318,299 +305,21 @@ The script uses two methods to determine bitrate:
 - Progress indicators for iterations and transcoding status
 - All logging functions (`info()`, `warn()`, `error()`) output to stderr to ensure they don't interfere with function return values when captured via command substitution
 
-## Recent Improvements
+### Testing
 
-### Code Refactoring
-- **Consolidated bitrate measurement**: Created generic `measure_bitrate()` function that eliminates duplicate code between `get_source_bitrate()` and `measure_sample_bitrate()`. Both functions now call the shared implementation.
-- **Extracted tolerance checking**: Created `is_within_tolerance()` function to replace duplicate range checking logic in `main()` and `find_optimal_bitrate()`. Improves readability and maintainability.
-- **Value sanitization helper**: Added `sanitize_value()` function for consistent sanitization of values before bc calculations. Used throughout the script for cleaner, more maintainable code.
-
-### Testing Infrastructure
-
-**Dual Test Suite Strategy** - See [plans/TEST-REFACTOR-PLAN.md](plans/TEST-REFACTOR-PLAN.md) for full details.
-
-**Legacy Suite (`test_boiler.sh`):**
-- **271 tests** (~6s execution time)
-- Quick feedback during development
-- Custom assertion framework
-
-**Bats Suite (`tests/*.bats`):**
-- **217 tests** (~16s with parallel execution)
-- Thorough pre-commit verification
-- Industry-standard bats-core framework with proper test isolation
-- Supports parallel execution (`bats --jobs 8`)
-- Supports selective test execution
-
-**Recommended Workflow:**
-1. During development: `bash test_boiler.sh` (~6s) for rapid iteration
-2. Before commits: `bats --jobs 8 tests/*.bats` (~16s) for thorough verification
-
-**Shared Testing Approach:**
-- Both suites use file-based call tracking to mock FFmpeg/ffprobe-dependent functions
-- Both work without FFmpeg/ffprobe installation (CI/CD ready)
-- **Mocked functions**: `get_video_resolution()`, `get_video_duration()`, `measure_bitrate()`, `transcode_sample()`, `transcode_full_video()`, `find_video_file()`, `check_requirements()`
-- **Call tracking**: Uses temporary files to track function calls across subshells
-- **Coverage**: Utility functions, mocked FFmpeg/ffprobe functions, full `main()` integration (including second/third pass transcoding, codec compatibility, depth traversal, argument parsing, error handling)
-
-## Current Session Status
-
-### Latest Session (Predictable File Processing Order)
-
-**Predictable file processing order:** File lists are now sorted alphabetically so processing order is consistent across runs and batch processing is deterministic.
-
-**Changes:**
-- **find_all_video_files()**: Output is sorted via `printf '%s\n' "${video_files[@]}" | sort` before printing. Main loop and any consumer see files in alphabetical order.
-- **find_skipped_video_files()**: Output is sorted the same way for consistent display order.
-- **preprocess_non_quicklook_files()**: The `files_to_check` array is sorted (same method) before the processing loop so preprocessing order is deterministic.
-
-**Testing:** Added `test_find_all_video_files_sorted_order()` which creates a temp dir with `c.mp4`, `a.mp4`, `b.mp4`, runs `find_all_video_files`, and asserts output is `./a.mp4`, `./b.mp4`, `./c.mp4`. Test count: 259 (all passing).
-
-### Previous Session (Remuxed-but-Never-Transcoded Edge Case)
-
-**Edge case:** Some files get remuxed (preprocessing or remux-only.sh) but are never transcoded (at/below target, so they only get remuxed with `.orig.` naming). If a remuxed file did not get the `.orig.` marker or was written to a different directory than the source, running cleanup-originals on that directory could delete the remuxed file because it has no transcoding markers and no companion transcoded file.
-
-**Fix applied:**
-- **boiler.sh**: `handle_non_quicklook_at_target()` now writes the remuxed output in the same directory as the source. Output path is built with `dirname "$video_file"` so that e.g. `videos/movie.mkv` becomes `videos/movie.orig.{bitrate}.Mbps.mp4` instead of `movie.orig.{bitrate}.Mbps.mp4` in the current working directory. Remuxed files therefore stay next to the original path and always carry the `.orig.` marker, so cleanup-originals correctly skips them.
-
-**Documented in PLAN.md:**
-- Future enhancement: "Remuxed-but-never-transcoded vs. cleanup-originals" with options to ensure all remuxed outputs use `.orig.` and same-dir paths, and optionally to have cleanup-originals only treat a file as "original" when an encoded/remuxed companion exists in the same directory.
-
-### Previous Session (Remux-Only Script and Future Enhancements)
-
-**Remux-Only Script:**
-- Created `remux-only.sh` - Standalone script for remuxing video files to MP4 with `.orig.{bitrate}.Mbps` naming
-- Only remuxes (no transcoding) - converts container format for QuickLook compatibility
-- Processes non-QuickLook compatible formats: mkv, wmv, avi, webm, flv (only if codec is MP4-compatible)
-- Includes configurable subdirectory depth traversal via `-L`/`--max-depth` flag (matching boiler.sh and cleanup-originals.sh)
-- Checks codec compatibility before remuxing (skips incompatible codecs like WMV3)
-- Measures source bitrate and includes it in the output filename
-- Removes original file only if remux succeeds
-- Supports processing specific files or all compatible files in directory/subdirectories
-
-**Future Enhancements:**
-- Added future enhancement to PLAN.md for force flag (`--force` or `-f`) to bypass file skipping logic in boiler.sh
-- Force flag would allow re-processing files with `.fmpg.`, `.orig.`, or `.hbrk.` markers
-- Documented use cases: re-encoding with updated settings, fixing encoding issues, updating encoding parameters
-
-### Previous Session (Configurable Subdirectory Depth)
-
-**Configurable Directory Traversal:**
-- Added `-L` and `--max-depth` command-line flags to `boiler.sh` for configurable subdirectory depth traversal
-- Default depth remains 2 (current directory + one subdirectory level) for backward compatibility
-- Supports depth 0 for unlimited recursive search
-- Updated `find_all_video_files()`, `find_skipped_video_files()`, and `preprocess_non_quicklook_files()` to use configurable depth
-- Added `validate_depth()` function for input validation
-- Updated `show_usage()` with depth flag documentation and examples
-- Added comprehensive tests for depth functionality (validate_depth, parse_arguments with depth flags, find_all_video_files with various depths)
-- Enhanced `cleanup-originals.sh` with the same configurable depth capability for consistency
-- Total test count: 259 tests (up from 188+)
-- All tests passing
-
-**Implementation Details:**
-- Global variable `GLOBAL_MAX_DEPTH` with default value of 2 (allows environment variable override for testing)
-- Depth validation ensures non-negative integers only
-- Unlimited depth (0) removes `-maxdepth` constraint from find commands
-- Helper scripts (`cleanup-originals.sh`) now support the same depth traversal capability
-
-### Previous Session (Linear Interpolation for Third Pass)
-
-**Third Pass with Linear Interpolation:**
-- Added `calculate_interpolated_quality()` function that uses linear interpolation between two known data points to calculate a more accurate quality value
-- Addresses overcorrection issue where the proportional adjustment algorithm in the second pass would overcorrect, causing the bitrate to swing from too high to too low (or vice versa)
-- Implementation: When second pass bitrate is still outside tolerance, performs a third pass using interpolation between first pass (quality1 → bitrate1) and second pass (quality2 → bitrate2) to find the quality value that should produce the target bitrate
-- Formula: `quality = quality2 + (quality1 - quality2) * (target - bitrate2) / (bitrate1 - bitrate2)`
-- Handles edge cases: Bitrates too close (uses midpoint), clamps to valid range [0, 100]
-- This ensures the final output gets as close to the target bitrate as possible, even when the quality-to-bitrate relationship is non-linear
-
-**Implementation Details:**
-- Added `calculate_interpolated_quality()` function (lines 1062-1100)
-- Updated `transcode_video()` to store first pass data and perform third pass with interpolation when second pass is still out of tolerance
-- Third pass uses actual data points instead of assuming linear relationship, providing more accurate quality adjustment
-
-### Previous Session (Command-Line Target Bitrate Override)
-
-**Command-Line Argument Support:**
-- Added `--target-bitrate` (or `-t`) flag to override resolution-based target bitrate
-- Accepts decimal values (e.g., `9.5` for 9.5 Mbps)
-- Validates bitrate values (must be between 0.1 and 100 Mbps)
-- Applies override to all files in batch processing
-- Includes `--help` flag for usage information
-
-**Implementation Details:**
-- Added `parse_arguments()` function for command-line parsing
-- Added `validate_bitrate()` helper function for input validation
-- Added `show_usage()` function for help output
-- Updated `main()` to call `parse_arguments()` and pass override to `transcode_video()`
-- Updated `preprocess_non_quicklook_files()` to use global override when set
-- Global variable `GLOBAL_TARGET_BITRATE_MBPS` stores the override value
-
-**Testing:**
-- Added tests for `validate_bitrate()` function (valid and invalid inputs)
-- Added tests for `parse_arguments()` function (flags, error cases, multiple flags)
-- Added integration tests for `main()` with override
-- Added tests for `preprocess_non_quicklook_files()` with override
-- Total test count: 188+ tests (up from 183)
-- All tests passing
-
-**Future Enhancement Path:**
-- Code structure designed to easily extend to resolution-specific overrides (e.g., `-t 2160p=9,1080p=5`)
-- Foundation laid for config file support (`--config bitrates.conf`)
-
-### Previous Session (WMV Codec Incompatibility Handling)
-
-**WMV Files with Incompatible Codecs:**
-- Added handling for WMV files (and other non-QuickLook formats) that are within target bitrate tolerance or below target but cannot be remuxed due to codec incompatibility (e.g., WMV3)
-- When remuxing fails due to codec incompatibility, the script now automatically transcodes the file to HEVC at the source bitrate (preserving file size while improving compatibility)
-- This ensures QuickLook compatibility without inflating file size, leveraging HEVC's superior compression efficiency (HEVC can maintain similar quality at the same bitrate as older codecs like WMV3)
-- Transcoding uses the `.orig.` naming pattern since the file is already at or below target bitrate
-- Handled in both `preprocess_non_quicklook_files()` and `transcode_video()` for consistency
-
-**Target Bitrate Override Support:**
-- Modified `transcode_video()` to accept an optional `target_bitrate_override_mbps` parameter
-- When provided, uses the override instead of calculating resolution-based target bitrate
-- Enables transcoding to specific bitrates (e.g., source bitrate for compatibility transcoding)
-- Sets up foundation for future command-line argument support (e.g., `--target-bitrate`)
-
-**Testing:**
-- Added tests for codec incompatibility handling in both preprocessing and main transcoding paths
-- Added tests for target bitrate override functionality
-- Total test count: 183 tests (up from 163)
-- All tests passing
-
-### Previous Session (Preprocessing and Codec Compatibility)
-
-**Preprocessing Pass for Non-QuickLook Formats:**
-- Added `preprocess_non_quicklook_files()` function that runs before main file discovery
-- Finds and remuxes non-QuickLook compatible files (mkv, wmv, avi, webm, flv) that are within tolerance or below target
-- Also processes `.orig.` files for nondestructive remuxing to MP4
-- Ensures files that should be remuxed are handled before skip checks
-
-**Codec Compatibility Checking:**
-- Added `is_codec_mp4_compatible()` function to check if codecs can be copied into MP4
-- Updated `remux_to_mp4()` to check codec compatibility before attempting remux
-- Prevents remux failures with incompatible codecs (wmv3, wmv1, wmv2, vc1, rv40, rv30, theora)
-- Provides clear warning messages when codecs are incompatible
-
-**Testing:**
-- Added 25 new tests covering `is_non_quicklook_format()`, `is_codec_mp4_compatible()`, and `remux_to_mp4()` with codec checking
-- Total test count: 163 tests (up from 138)
-- All tests passing
-
-### Previous Session (Subdirectory Processing)
-
-**Batch Processing with Subdirectory Support:**
-- Modified `find_all_video_files()` to search subdirectories one level deep (`find . -maxdepth 2`)
-- Updated `has_encoded_version()` to check for encoded versions in the same directory as the source file (not just current directory)
-- Updated `find_skipped_video_files()` to search subdirectories one level deep
-- Enhanced `main()` to show directory context in progress messages for files in subdirectories
-- Output files are created in the same directory as their source files
-- All existing tests pass (183 tests total)
-
-### Previous Session (Testing Infrastructure)
-
-**Function Mocking and Integration Tests:**
-- Implemented file-based call tracking system for mocking FFmpeg/ffprobe functions
-- Added 25 integration tests for `main()` function covering all code paths
-- Refactored test suite to avoid file I/O dependencies (no Python, dd, or large file creation needed)
-- Tests now work across subshells using temporary files for call tracking
-- Total test coverage: 138 tests covering utility functions, mocked functions, and integration scenarios (including second pass transcoding, multiple resolution support, `calculate_adjusted_quality()` unit tests, and error handling tests)
-- All tests passing and CI/CD ready (no FFmpeg/ffprobe required for testing)
-
-**Key Technical Decisions:**
-- Used file-based tracking instead of arrays/strings to work around bash subshell limitations (command substitution `$(...)` creates subshells where variable assignments don't persist)
-- Mocked `find_optimal_quality()` initially but removed mock to allow full integration testing - optimization converges quickly when sample bitrates match target
-- Tests verify function behavior through call tracking rather than file side effects, making them faster and more reliable
-
-### Recent Major Changes (Current Implementation)
-
-**Switched to Constant Quality Mode:**
-- Changed from bitrate mode (`-b:v`) to constant quality mode (`-q:v`) to match HandBrake's approach
-- Uses VideoToolbox's `-q:v` parameter (0-100 scale, higher = higher quality/bitrate)
-- Iteratively adjusts quality value to hit target bitrate, similar to CRF/RF mode behavior
-- This approach adapts bitrate to content complexity, reducing blocky artifacts
-
-**Optimization Loop Improvements:**
-- Removed iteration limit safeguard - loop continues until convergence or quality bounds reached
-- Fixed quality adjustment logic to trend correctly:
-  - Bitrate too low → increase quality value (trend upwards)
-  - Bitrate too high → decrease quality value (trend downwards)
-- **Proportional adjustment algorithm**: Replaced fixed step size (2) with proportional adjustment based on distance from target:
-  - Minimum step: 1 (for fine-tuning when close to target)
-  - Maximum step: 10 (for large corrections when far from target)
-  - Adjustment scales proportionally: larger adjustments when far from target, smaller when close
-  - Faster convergence: reduces iterations needed, especially when starting far from target bitrate
-- **Oscillation detection**: Added detection for cycles between quality values (e.g., 60 ↔ 61 ↔ 62) that can occur with tight tolerances. When oscillation is detected, the algorithm selects the quality value that produces bitrate closest to target and breaks the loop, preventing infinite oscillation.
-- Starting quality value: 60 (increased from 52 for faster convergence)
-
-**Sample Duration Improvements:**
-- Increased sample duration from 15 seconds to 60 seconds for better bitrate accuracy
-- Added adaptive sampling logic for shorter videos:
-  - Videos < 60 seconds: Uses entire video as single sample
-  - Videos 60-119 seconds: Uses 1 sample (entire video)
-  - Videos 120-179 seconds: Uses 2 samples (beginning and end with 60s spacing)
-  - Videos ≥ 180 seconds: Uses 3 samples (10%, 50%, 90% positions)
-- Longer samples average out more variation, improving bitrate targeting accuracy
-- For longer videos, each iteration now samples 180 seconds total (3 × 60s)
-
-**Filter Changes:**
-- Removed deblocking filters - relying on constant quality mode to handle quality/artifacts
+Dual test suite (legacy + bats); see README for how to run. Both suites use file-based call tracking to mock FFmpeg/ffprobe-dependent functions and work without FFmpeg/ffprobe installation (CI/CD ready). Run legacy suite during development for rapid iteration; run bats before commits for thorough verification.
 
 ### Known Issues
 
 - **FFmpeg processes not cleaned up on interrupt**: When using input seeking (`-ss` before `-i`), interrupting the script (Ctrl+C) leaves FFmpeg child processes running. Signal handling is implemented but may need verification.
 
-### Future Enhancements (See PLAN.md)
+### Future Direction
 
-- Configurable target bitrates per resolution
-- SDR vs HDR bitrate differentiation
-- Configurable constant quality start ranges
-- **Border detection and cropping**: Enhance the main script to use border detection to automatically cut black bars (letterboxing/pillarboxing) out of reencoded files. This would improve file size efficiency by removing unnecessary black borders before transcoding, ensuring the encoded video only contains the actual content area. Implementation considerations:
-  - Use FFmpeg's `cropdetect` filter to detect black borders automatically
-  - Apply cropping filter during transcoding to remove detected borders
-  - Preserve aspect ratio and ensure cropping doesn't affect video quality
-  - Handle edge cases where border detection might incorrectly identify content as borders
-  - Make cropping optional via command-line flag (e.g., `--crop-borders` or `-c`) to allow users to preserve original framing when desired
-
-### Smart Pre-processing
-- Added early exit check: If source video is already within ±5% of target bitrate OR if source bitrate is below target, the script exits immediately with a helpful message, avoiding unnecessary transcoding work
-- Uses the same tolerance logic (±5%) and comparison method as the optimization loop for consistency
-- `get_source_bitrate()` function measures source video bitrate using the same approach as sample measurement (ffprobe first, file size fallback)
-- Handles both cases: videos already at target (within tolerance) and videos already more compressed than target (below target bitrate)
-- **Automatic renaming for files below target**: When a source file is below target bitrate, it is automatically renamed to include its actual bitrate using the format `{base}.orig.{bitrate}.Mbps.{ext}` (e.g., `video.orig.2.90.Mbps.mp4`). This provides consistent filename formatting even for files that don't need transcoding.
-- **Non-QuickLook format remuxing**: The script includes a preprocessing pass (`preprocess_non_quicklook_files()`) that runs before main file discovery. This pass:
-  - Finds all non-QuickLook compatible formats (mkv, wmv, avi, webm, flv) that are within tolerance or below target
-  - Also processes `.orig.` files (nondestructive remuxing for QuickLook compatibility)
-  - Remuxes eligible files to MP4 with QuickLook compatibility (`-movflags +faststart` and `-tag:v hvc1` for HEVC)
-  - Checks codec compatibility before remuxing (skips incompatible codecs like WMV3 with a warning)
-  - This ensures files that should be remuxed are handled before skip checks, preventing them from being skipped when they need remuxing
-- **Codec compatibility checking**: Added `is_codec_mp4_compatible()` function to check if a video codec can be copied into MP4 without transcoding. Incompatible codecs (wmv3, wmv1, wmv2, vc1, rv40, rv30, theora) are skipped with a clear warning message, preventing remux failures.
-
-### Modularization
-- Refactored script into focused functions for better maintainability
-- Separated concerns: utility functions, configuration, transcoding, and orchestration
-- Main execution flow clearly visible in `main()` function
-
-### Bug Fixes
-- Fixed `bc` parse errors by sanitizing all values (removing newlines/whitespace) before passing to `bc`
-- Fixed function return value corruption by redirecting logging functions to stderr
-- Added value sanitization throughout to prevent issues with `ffprobe` and `bc` outputs containing trailing newlines
-- Added QuickLook compatibility: `-movflags +faststart` for sample transcoding; both `-movflags +faststart` and `-tag:v hvc1` for final output to ensure macOS Finder preview support
-- Fixed short-circuit logic: Added check for source bitrate below target (previously only checked within tolerance range)
-- Fixed incorrect info message about quality values (corrected "lower = higher quality" to "higher = higher quality/bitrate")
-- Fixed integer conversion error in proportional adjustment: Quality adjustment values are now properly rounded to integers using `printf "%.0f"` before use in arithmetic operations, preventing "integer expression expected" errors
+See [PLAN.md](PLAN.md) and [README.md](README.md) for roadmap and user-facing future features. Architecture-affecting items (e.g. border detection/cropping) are tracked in PLAN.
 
 ## Current Limitations
 
-1. **macOS-only**: Currently only supports macOS (VideoToolbox hardware acceleration requires macOS)
-2. **Subdirectory depth**: Default depth is 2 levels (current directory + one subdirectory level), but configurable via `-L`/`--max-depth` flag (use `-L 0` for unlimited recursive search)
-3. **Hardcoded defaults**: Bitrates, codec, and container are fixed (though target bitrate can be overridden via `--target-bitrate` flag)
-4. **Limited configuration**: No config file support yet (only command-line overrides for target bitrate and depth)
-5. **No installation**: Script must be run directly, not installed as system command
-6. **Audio handling**: Always copies audio without re-encoding options
-
-## Future Direction
-
-This is a proof-of-concept project focused on iterating over ergonomics and usability on macOS. The current implementation leverages macOS-specific hardware acceleration via VideoToolbox. Future improvements will be determined based on usage patterns and needs as the project evolves. Cross-platform support (Linux/Windows) may be considered in the future, but the current focus is on optimizing the macOS experience. See [PLAN.md](PLAN.md) and [README.md](README.md) for current status and potential future enhancements.
+- **macOS-only**: VideoToolbox requires macOS. Depth, bitrate override, and other user-facing limits are documented in README.
 
 ## Design Decisions
 

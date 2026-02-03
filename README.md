@@ -222,7 +222,6 @@ bats --jobs 8 tests/*.bats
 
 Both suites use function mocking with file-based call tracking, work without FFmpeg/ffprobe installation (CI/CD ready), and cover utility functions, integration tests, codec compatibility, depth traversal, argument parsing, and error handling.
 
-See [plans/TEST-REFACTOR-PLAN.md](plans/TEST-REFACTOR-PLAN.md) for detailed test suite documentation.
 
 ## Contributing
 
@@ -247,5 +246,4 @@ This modular structure makes the code easier to understand, test, and maintain. 
 
 - [PROJECT-CONTEXT.md](PROJECT-CONTEXT.md) - Technical details, architecture, and design decisions
 - [PLAN.md](PLAN.md) - Development roadmap and future features
-- [plans/TEST-REFACTOR-PLAN.md](plans/TEST-REFACTOR-PLAN.md) - Test suite refactoring plan and results
-
+- [CHANGELOG.md](CHANGELOG.md) - Version history and notable changes
