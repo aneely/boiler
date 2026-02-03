@@ -32,10 +32,8 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Error handling and validation
 - [x] Early exit check: Skip transcoding if source video is already within ±5% of target bitrate
 - [x] MKV remuxing: Automatically remuxes MKV files that are within tolerance or below target to MP4 with QuickLook compatibility (copies streams without transcoding)
-- [x] Helper scripts for testing (copy test videos, cleanup, remux-only, cleanup-originals)
-- [x] Comprehensive test suite with function mocking (CI/CD ready) - see [plans/TEST-REFACTOR-PLAN.md](plans/TEST-REFACTOR-PLAN.md) for details
-  - Legacy suite: 271 tests (~6s, quick feedback during development)
-  - Bats suite: 217 tests (~16s parallel, thorough pre-commit verification)
+- [x] Helper scripts (copy-*, cleanup-*, remux-only): see README
+- [x] Test suite (legacy + bats); see README for how to run
 - [x] Second pass transcoding: Automatically performs a second transcoding pass with adjusted quality if the first pass bitrate is outside tolerance range
 - [x] Preprocessing pass for non-QuickLook formats: Automatically remuxes non-QuickLook compatible files (mkv, wmv, avi, webm, flv) that are within tolerance or below target, including `.orig.` files, before main file discovery
 - [x] Codec compatibility checking: Checks codec compatibility before remuxing to prevent failures with incompatible codecs (e.g., WMV3)
@@ -43,39 +41,13 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Configurable subdirectory depth: Added `-L` and `--max-depth` command-line flags for configurable directory traversal depth (default: 2, supports unlimited with `-L 0`)
 - [x] Third pass with linear interpolation: Automatically performs a third transcoding pass using linear interpolation between first and second pass data points when second pass is still outside tolerance, addressing overcorrection issues
 
-### Current Defaults
+### Implementation Notes (Known Issues)
 
-- **Codec**: HEVC (H.265) via `hevc_videotoolbox` (hardware-accelerated)
-- **Quality control**: Constant quality mode (`-q:v`) - Iteratively adjusts quality value (0-100, higher = higher quality/bitrate) to hit target bitrate
-- **Starting quality**: 60
-- **Quality adjustment**: Proportional adjustment algorithm (minimum step: 1, maximum step: 10) based on distance from target
-- **Container**: MP4
-- **Audio**: Copy (passthrough)
-- **Target Bitrates**:
-  - 2160p: 11 Mbps
-  - 1080p: 8 Mbps
-  - 720p: 5 Mbps
-  - 480p: 2.5 Mbps
-- **Platform**: macOS Sequoia (hardware acceleration unlocked)
+- **macOS-only**: Currently only supports macOS due to VideoToolbox. Cross-platform may be considered later.
+- **No iteration limit**: Optimization loop runs until convergence or quality bounds (0–100); no fixed cap.
+- **FFmpeg process cleanup**: Signal handling kills process group on interrupt; behavior with input seeking may need verification.
 
-### Helper Scripts
-
-- `copy-1080p-test.sh` - Copies 1080p test video to current directory
-- `copy-4k-test.sh` - Copies 4K test video to current directory
-- `cleanup-mp4.sh` - Removes all .mp4 files from project root directory
-- `cleanup-originals.sh` - Moves to trash video files that do not have transcoding markers (`.fmpg.`, `.orig.`, `.hbrk.`) — i.e. original/source files — from current directory and subdirectories. Supports `-L`/`--max-depth` flag for configurable depth traversal.
-- `remux-only.sh` - Standalone script for remuxing video files to MP4 with `.orig.{bitrate}.Mbps` naming. Only remuxes (no transcoding) - converts container format for QuickLook compatibility. Processes non-QuickLook compatible formats (mkv, wmv, avi, webm, flv) and includes codec compatibility checking. Supports `-L`/`--max-depth` flag for configurable depth traversal.
-
-### Known Issues / Recent Changes
-
-- **macOS-only**: Currently only supports macOS due to VideoToolbox hardware acceleration dependency. Cross-platform support may be added in the future.
-- **Constant quality mode**: Switched from bitrate mode (`-b:v`) to constant quality mode (`-q:v`) to match HandBrake's approach and reduce blocky artifacts. Quality value (0-100) is iteratively adjusted to hit target bitrate.
-- **Multi-point sampling**: Implemented to address issue where single sample from beginning didn't accurately predict full video bitrate.
-- **No iteration limit**: Removed iteration limit safeguard - loop continues until convergence or quality bounds (0-100) are reached.
-- **Code refactoring**: Consolidated duplicate bitrate measurement logic into generic `measure_bitrate()` function. Extracted tolerance checking into `is_within_tolerance()` helper. Added `sanitize_value()` helper for consistent value sanitization. Renamed `find_optimal_bitrate()` to `find_optimal_quality()` to reflect constant quality mode.
-- **Testing infrastructure**: Dual test suite strategy with comprehensive coverage. Legacy suite (271 tests, ~6s) for quick feedback during development; bats suite (217 tests, ~16s parallel) for thorough pre-commit verification. Both suites use function mocking with file-based call tracking, work without FFmpeg/ffprobe installation (CI/CD ready), and cover utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration. See [plans/TEST-REFACTOR-PLAN.md](plans/TEST-REFACTOR-PLAN.md) for details.
-- **Sample duration**: Sample duration is set to 60 seconds for better bitrate accuracy. Adaptive sampling logic uses fewer samples for shorter videos (1 sample for videos <120s, 2 samples for 120-179s, 3 samples for ≥180s).
-- **FFmpeg process cleanup**: Signal handling implemented to kill process group on interrupt, but may need verification.
+*Recent changes and session history are in [CHANGELOG.md](CHANGELOG.md).*
 
 ## Future Enhancements
 
@@ -85,6 +57,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] **MKV remuxing for optimized files**: For MKV files that are already within tolerance or below target bitrate, automatically remux them to MP4 with QuickLook compatibility. This converts the container format without transcoding video/audio streams, improving macOS Finder QuickLook compatibility while preserving quality. Uses `-movflags +faststart` and `-tag:v hvc1` (for HEVC) for optimal QuickLook support. (Implemented)
 - [ ] **Initial pass to identify work**: Perform an initial pass over all discovered video files to capture all potential work and allow short-circuiting logic to filter down to untranscoded files before starting any transcoding. This prevents non-deterministic behavior where a file transcoded close to the target bitrate (but slightly out of tolerance) causes a second run of the script to attempt re-encoding an already good enough encoded file. The initial pass would identify files that are already within tolerance or have encoded versions, ensuring they are properly skipped before any transcoding begins.
 - [x] **Single-pass remux and transcode**: Ensure that both the remuxing pass and transcoding pass happen in a single script execution, rather than requiring two separate runs. (Implemented.) The current design already achieves this: preprocessing only remuxes (or compatibility-transcodes) files that are within tolerance or below target; those outputs use `.orig.` naming and need no further work. Above-target non-QuickLook files are not touched in preprocessing—they are found by `find_all_video_files()` (called after preprocessing) and transcoded in the main loop in one pass. No second run is required.
+- [ ] **Run once: remux then reencode (re-invoke)**: Simple implementation where the remux path, after finishing, calls the script itself again so one user run yields both remuxing and reencoding. Base case: when the script is run *after* a remux, it must not run the remux/preprocess step again. The recursive call passes a post-remux indicator (e.g. env var `BOILER_AFTER_REMUX=1` or flag `--after-remux`). First run: run remux/preprocess; when that pass finishes, re-exec the script with the indicator. Second run: if the indicator is set, skip remux/preprocess and only do discovery + transcode; do not set the indicator again, so no third run. Result: one user invocation → one remux pass then one encode pass.
 
 ### Batch Processing
 
@@ -204,7 +177,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 ### Development Workflow
 
-- [x] **Test suite refactoring for speed and independence**: Implemented dual test suite strategy with bats-core framework. See [plans/TEST-REFACTOR-PLAN.md](plans/TEST-REFACTOR-PLAN.md) for full details.
+- [x] **Test suite refactoring for speed and independence**: Implemented dual test suite strategy with bats-core framework.
   - **Legacy suite** (`test_boiler.sh`): 271 tests, ~6s, quick feedback during development
   - **Bats suite** (`tests/*.bats`): 217 tests, ~16s parallel, thorough pre-commit verification with proper isolation
   - **Recommended workflow**: Run legacy for rapid iteration, bats before commits
