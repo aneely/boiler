@@ -6,6 +6,14 @@ All notable changes to this project are documented here. Dates are taken from gi
 
 ## 2026-02-03
 
+### Changed
+
+- **Documentation reorganization**: PROJECT-CONTEXT.md condensed from 375 lines to ~105 lines, focusing on development workflow directives and essential context. Moved detailed algorithm documentation to new `docs/TECHNICAL.md` file (260 lines) covering quality optimization, multi-pass strategy, and design decisions. Added comprehensive inline documentation to 12 key functions in `boiler.sh` including `calculate_target_bitrate()`, `find_optimal_quality()`, `calculate_adjusted_quality()`, `calculate_interpolated_quality()`, and `transcode_video()`.
+
+---
+
+## 2026-02-03
+
 ### Added
 
 - **Bats test suite and dual-suite strategy**: Added bats-core framework (`tests/*.bats`); project now has legacy suite (`test_boiler.sh`) for quick iteration and bats for thorough pre-commit verification. Both use file-based mocking; no FFmpeg/ffprobe required (CI/CD ready). See README for how to run.
