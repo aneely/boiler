@@ -31,6 +31,14 @@ This project provides a simplified command-line interface for transcoding video 
 
 This ensures the user maintains control over the development direction and can make informed decisions about which solutions best fit their needs.
 
+### Token Usage
+
+**Always ask before taking action.** Do not execute commands, make edits, or perform multi-step operations without explicit user approval. Present options and wait for confirmation before proceeding. This applies especially to:
+- Git operations (commits, pushes, resets)
+- Destructive file modifications
+- Installing or vendoring dependencies
+- Any action that cannot be easily undone
+
 ### Reverting Changes
 
 **Prefer version control over manual rollback.** To discard uncommitted changes and return the working directory to a known good state, use git:
@@ -251,19 +259,32 @@ The script uses an iterative approach to find the optimal quality setting using 
 ```
 boiler/
 ├── boiler.sh                    # Main transcoding script
-├── test_boiler.sh               # Test suite with function mocking (259 tests)
-├── copy-1080p-test.sh          # Helper: Copy 1080p test video to current directory
+├── test_boiler.sh               # Legacy test suite (271 tests, ~6s)
+├── run-bats-tests.sh            # Bats test runner script
+├── copy-1080p-test.sh           # Helper: Copy 1080p test video to current directory
 ├── copy-4k-test.sh              # Helper: Copy 4K test video to current directory
 ├── cleanup-mp4.sh               # Helper: Remove all .mp4 files from project root
-├── cleanup-originals.sh          # Helper: Remove all .orig. marked video files (moves to trash). Supports -L/--max-depth flag.
-├── remux-only.sh                # Helper: Remux video files to MP4 with .orig.{bitrate}.Mbps naming. Supports -L/--max-depth flag.
+├── cleanup-originals.sh         # Helper: Remove all .orig. marked video files. Supports -L/--max-depth.
+├── remux-only.sh                # Helper: Remux video files to MP4. Supports -L/--max-depth.
 ├── .gitignore                   # Git ignore patterns (macOS, video files, outputs)
+├── CLAUDE.md                    # Claude/AI assistant context
 ├── PROJECT-CONTEXT.md           # Technical documentation
 ├── PLAN.md                      # Development roadmap
 ├── README.md                    # User documentation
+├── plans/                       # Detailed planning documents
+│   └── TEST-REFACTOR-PLAN.md    # Test suite refactoring plan and results
+├── tests/                       # Bats test suite (217 tests, ~16s parallel)
+│   ├── helpers/                 # Shared test utilities
+│   │   ├── setup.bash           # Common test setup
+│   │   └── mocks.bash           # FFmpeg/ffprobe mock functions
+│   ├── test_helper/             # Bats helper libraries
+│   │   ├── bats-support/
+│   │   ├── bats-assert/
+│   │   └── bats-file/
+│   └── *.bats                   # Test files (15 files)
 ├── testdata/                    # Test video files
 │   ├── videos/
-│   │   ├── 1080p/              # 1080p test videos (gitignored)
+│   │   ├── 1080p/               # 1080p test videos (gitignored)
 │   │   └── 4k/                  # 4K test videos (gitignored)
 │   └── video-attribution-cc-license.txt
 └── [transcoded output files]    # Generated in working directory (gitignored)
@@ -306,27 +327,30 @@ The script uses two methods to determine bitrate:
 
 ### Testing Infrastructure
 
-**Test Suite (`test_boiler.sh`):**
-- **259 tests** covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second and third pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` and `calculate_interpolated_quality()` unit tests, codec compatibility checking, configurable depth traversal, command-line argument parsing, and error handling tests)
-- **Function mocking approach**: Uses file-based call tracking to mock FFmpeg/ffprobe-dependent functions without requiring actual video files or FFmpeg installation
-- **Mocked functions**:
-  - `get_video_resolution()` - Returns configurable resolution (default: 1080p)
-  - `get_video_duration()` - Returns configurable duration (default: 300s)
-  - `measure_bitrate()` - Returns configurable bitrate (supports source, sample, and output file differentiation)
-  - `transcode_sample()` - Tracks calls instead of transcoding
-  - `transcode_full_video()` - Tracks calls instead of transcoding
-  - `find_video_file()` - Returns test file paths
-  - `check_requirements()` - Skips requirement checks in test mode
-- **Call tracking**: Uses temporary files to track function calls across subshells (command substitution creates subshells where variable assignments don't persist)
-- **Integration tests**: Tests `main()` function covering:
-  - Early exit when source is within tolerance
-  - Early exit when source is below target (with file renaming verification)
-  - Full transcoding workflow (source above target)
-- **Benefits**:
-  - Fast execution (no actual transcoding)
-  - No FFmpeg/ffprobe required (enables CI/CD in environments without FFmpeg)
-  - Verifies function behavior through call tracking rather than file side effects
-  - No external dependencies (no Python, dd, or other tools needed)
+**Dual Test Suite Strategy** - See [plans/TEST-REFACTOR-PLAN.md](plans/TEST-REFACTOR-PLAN.md) for full details.
+
+**Legacy Suite (`test_boiler.sh`):**
+- **271 tests** (~6s execution time)
+- Quick feedback during development
+- Custom assertion framework
+
+**Bats Suite (`tests/*.bats`):**
+- **217 tests** (~16s with parallel execution)
+- Thorough pre-commit verification
+- Industry-standard bats-core framework with proper test isolation
+- Supports parallel execution (`bats --jobs 8`)
+- Supports selective test execution
+
+**Recommended Workflow:**
+1. During development: `bash test_boiler.sh` (~6s) for rapid iteration
+2. Before commits: `bats --jobs 8 tests/*.bats` (~16s) for thorough verification
+
+**Shared Testing Approach:**
+- Both suites use file-based call tracking to mock FFmpeg/ffprobe-dependent functions
+- Both work without FFmpeg/ffprobe installation (CI/CD ready)
+- **Mocked functions**: `get_video_resolution()`, `get_video_duration()`, `measure_bitrate()`, `transcode_sample()`, `transcode_full_video()`, `find_video_file()`, `check_requirements()`
+- **Call tracking**: Uses temporary files to track function calls across subshells
+- **Coverage**: Utility functions, mocked FFmpeg/ffprobe functions, full `main()` integration (including second/third pass transcoding, codec compatibility, depth traversal, argument parsing, error handling)
 
 ## Current Session Status
 

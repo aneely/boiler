@@ -2054,6 +2054,126 @@ test_preprocess_with_override
 
 echo ""
 
+# Test is_mkv_file() function
+test_is_mkv_file() {
+    echo "Testing is_mkv_file()..."
+    
+    # Test lowercase .mkv extension
+    is_mkv_file "video.mkv" && local mkv_result=0 || local mkv_result=1
+    assert_exit_code $mkv_result 0 "is_mkv_file: detects lowercase .mkv"
+    
+    # Test uppercase .MKV extension
+    is_mkv_file "video.MKV" && local mkv_upper_result=0 || local mkv_upper_result=1
+    assert_exit_code $mkv_upper_result 0 "is_mkv_file: detects uppercase .MKV"
+    
+    # Test mixed case .Mkv extension
+    is_mkv_file "video.Mkv" && local mkv_mixed_result=0 || local mkv_mixed_result=1
+    assert_exit_code $mkv_mixed_result 0 "is_mkv_file: detects mixed case .Mkv"
+    
+    # Test non-mkv extension .mp4
+    is_mkv_file "video.mp4" && local mp4_result=0 || local mp4_result=1
+    assert_exit_code $mp4_result 1 "is_mkv_file: rejects .mp4"
+    
+    # Test non-mkv extension .avi
+    is_mkv_file "video.avi" && local avi_result=0 || local avi_result=1
+    assert_exit_code $avi_result 1 "is_mkv_file: rejects .avi"
+    
+    # Test non-mkv extension .mov
+    is_mkv_file "video.mov" && local mov_result=0 || local mov_result=1
+    assert_exit_code $mov_result 1 "is_mkv_file: rejects .mov"
+}
+test_is_mkv_file
+
+echo ""
+
+# Test find_skipped_video_files() function
+test_find_skipped_video_files() {
+    echo "Testing find_skipped_video_files()..."
+    
+    # Store original directory
+    local original_dir=$(pwd)
+    
+    # Create a temp directory for testing
+    local temp_dir=$(mktemp -d)
+    cd "$temp_dir"
+    
+    # Create test files: some skipped, some not
+    touch "regular_video.mp4"
+    touch "video.fmpg.10.25.Mbps.mp4"
+    touch "video.orig.5.00.Mbps.mp4"
+    touch "video.hbrk.something.mp4"
+    touch "another_regular.mkv"
+    
+    # Set max depth for test
+    GLOBAL_MAX_DEPTH=1
+    
+    # Get skipped files
+    local skipped_files=$(find_skipped_video_files)
+    
+    # Check that skipped files include .fmpg., .orig., .hbrk. marked files
+    # Use || true to prevent set -e from exiting on grep failure
+    echo "$skipped_files" | grep -q "fmpg" || true
+    local fmpg_found=$?
+    # Reset to check actual result (grep -q sets $? to 0 if found, 1 if not)
+    echo "$skipped_files" | grep -q "fmpg" && fmpg_found=0 || fmpg_found=1
+    assert_exit_code $fmpg_found 0 "find_skipped_video_files: finds .fmpg. files"
+    
+    echo "$skipped_files" | grep -q "orig" && local orig_found=0 || local orig_found=1
+    assert_exit_code $orig_found 0 "find_skipped_video_files: finds .orig. files"
+    
+    echo "$skipped_files" | grep -q "hbrk" && local hbrk_found=0 || local hbrk_found=1
+    assert_exit_code $hbrk_found 0 "find_skipped_video_files: finds .hbrk. files"
+    
+    # Check that regular files are NOT in skipped list
+    echo "$skipped_files" | grep -q "regular_video.mp4" && local regular_found=0 || local regular_found=1
+    assert_exit_code $regular_found 1 "find_skipped_video_files: excludes regular files"
+    
+    echo "$skipped_files" | grep -q "another_regular.mkv" && local mkv_found=0 || local mkv_found=1
+    assert_exit_code $mkv_found 1 "find_skipped_video_files: excludes regular mkv files"
+    
+    # Cleanup
+    cd "$original_dir"
+    rm -rf "$temp_dir"
+}
+test_find_skipped_video_files
+
+echo ""
+
+# Test find_skipped_video_files() returns sorted output
+test_find_skipped_video_files_sorted() {
+    echo "Testing find_skipped_video_files() sorted output..."
+    
+    # Store original directory
+    local original_dir=$(pwd)
+    
+    # Create a temp directory for testing
+    local temp_dir=$(mktemp -d)
+    cd "$temp_dir"
+    
+    # Create test files in non-alphabetical order
+    touch "z_video.fmpg.10.00.Mbps.mp4"
+    touch "a_video.orig.5.00.Mbps.mp4"
+    touch "m_video.hbrk.foo.mp4"
+    
+    # Set max depth for test
+    GLOBAL_MAX_DEPTH=1
+    
+    # Get skipped files
+    local skipped_files=$(find_skipped_video_files)
+    
+    # Check that output is sorted (first file should be a_video)
+    local first_file=$(echo "$skipped_files" | head -1)
+    echo "$first_file" | grep -q "a_video" && local a_first=0 || local a_first=1
+    assert_exit_code $a_first 0 "find_skipped_video_files: returns sorted output (a before m, z)"
+    
+    # Cleanup
+    cd "$original_dir"
+    rm -rf "$temp_dir"
+}
+test_find_skipped_video_files_sorted
+
+echo ""
+
 # Test that main() passes target bitrate override to transcode_video()
 # This is tested indirectly through the existing transcode_video() tests with override parameter
 # The integration is verified by ensuring transcode_video() receives and uses the override correctly

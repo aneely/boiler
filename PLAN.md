@@ -33,7 +33,9 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Early exit check: Skip transcoding if source video is already within ±5% of target bitrate
 - [x] MKV remuxing: Automatically remuxes MKV files that are within tolerance or below target to MP4 with QuickLook compatibility (copies streams without transcoding)
 - [x] Helper scripts for testing (copy test videos, cleanup, remux-only, cleanup-originals)
-- [x] Comprehensive test suite with function mocking (259 tests, CI/CD ready)
+- [x] Comprehensive test suite with function mocking (CI/CD ready) - see [plans/TEST-REFACTOR-PLAN.md](plans/TEST-REFACTOR-PLAN.md) for details
+  - Legacy suite: 271 tests (~6s, quick feedback during development)
+  - Bats suite: 217 tests (~16s parallel, thorough pre-commit verification)
 - [x] Second pass transcoding: Automatically performs a second transcoding pass with adjusted quality if the first pass bitrate is outside tolerance range
 - [x] Preprocessing pass for non-QuickLook formats: Automatically remuxes non-QuickLook compatible files (mkv, wmv, avi, webm, flv) that are within tolerance or below target, including `.orig.` files, before main file discovery
 - [x] Codec compatibility checking: Checks codec compatibility before remuxing to prevent failures with incompatible codecs (e.g., WMV3)
@@ -71,7 +73,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - **Multi-point sampling**: Implemented to address issue where single sample from beginning didn't accurately predict full video bitrate.
 - **No iteration limit**: Removed iteration limit safeguard - loop continues until convergence or quality bounds (0-100) are reached.
 - **Code refactoring**: Consolidated duplicate bitrate measurement logic into generic `measure_bitrate()` function. Extracted tolerance checking into `is_within_tolerance()` helper. Added `sanitize_value()` helper for consistent value sanitization. Renamed `find_optimal_bitrate()` to `find_optimal_quality()` to reflect constant quality mode.
-- **Testing infrastructure**: Implemented comprehensive test suite with function mocking using file-based call tracking. 259 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration (including second and third pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` and `calculate_interpolated_quality()` unit tests, codec compatibility checking, configurable depth traversal, command-line argument parsing, and error handling tests). Tests work without FFmpeg/ffprobe installation, enabling CI/CD workflows. Uses temporary files for call tracking to work around bash subshell limitations.
+- **Testing infrastructure**: Dual test suite strategy with comprehensive coverage. Legacy suite (271 tests, ~6s) for quick feedback during development; bats suite (217 tests, ~16s parallel) for thorough pre-commit verification. Both suites use function mocking with file-based call tracking, work without FFmpeg/ffprobe installation (CI/CD ready), and cover utility functions, mocked FFmpeg/ffprobe functions, and full `main()` integration. See [plans/TEST-REFACTOR-PLAN.md](plans/TEST-REFACTOR-PLAN.md) for details.
 - **Sample duration**: Sample duration is set to 60 seconds for better bitrate accuracy. Adaptive sampling logic uses fewer samples for shorter videos (1 sample for videos <120s, 2 samples for 120-179s, 3 samples for ≥180s).
 - **FFmpeg process cleanup**: Signal handling implemented to kill process group on interrupt, but may need verification.
 
@@ -202,23 +204,11 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 ### Development Workflow
 
-- [ ] **Test suite refactoring for speed and independence**: Refactor the test suite to make tests faster and independently runnable. Current test suite (259 tests) uses a custom framework with function mocking, but tests share state and run sequentially. Potential improvements:
-  - **Independent test execution**: Make each test function completely isolated with no shared state (currently uses global variables and file-based call tracking that persists across tests)
-  - **Parallel test execution**: Enable running tests in parallel to reduce total execution time (currently runs sequentially)
-  - **Selective test execution**: Allow running individual tests or test groups without running the entire suite
-  - **Adopt bats framework**: Evaluate adopting [bats](https://github.com/bats-core/bats-core) (Bash Automated Testing System) or similar testing framework for:
-    - Standardized test structure and assertions
-    - Built-in parallel execution support
-    - Better test isolation and cleanup
-    - Improved test output and reporting
-    - Easier test maintenance and readability
-  - **Benefits**: Faster feedback during development, ability to run only relevant tests, better CI/CD performance, standardized testing patterns
-  - **Trade-offs**: Migration effort, potential need to adapt existing mocking approach, learning curve for new framework
-  - **Implementation considerations**:
-    - Preserve existing function mocking approach (works well for FFmpeg/ffprobe dependencies)
-    - Maintain compatibility with CI/CD workflows (currently works without FFmpeg installation)
-    - Ensure test coverage remains comprehensive (259 tests covering utility functions, integration tests, error handling)
-    - Consider hybrid approach: use bats for structure but keep custom mocking for FFmpeg/ffprobe functions
+- [x] **Test suite refactoring for speed and independence**: Implemented dual test suite strategy with bats-core framework. See [plans/TEST-REFACTOR-PLAN.md](plans/TEST-REFACTOR-PLAN.md) for full details.
+  - **Legacy suite** (`test_boiler.sh`): 271 tests, ~6s, quick feedback during development
+  - **Bats suite** (`tests/*.bats`): 217 tests, ~16s parallel, thorough pre-commit verification with proper isolation
+  - **Recommended workflow**: Run legacy for rapid iteration, bats before commits
+  - **Both suites**: Use same mocking approach, work without FFmpeg/ffprobe, comprehensive coverage
 - [ ] **Account-wide Cursor configuration for "remember what you need to" convention**: Explore options for making the PROJECT-CONTEXT.md/PLAN.md/README.md update convention reusable across projects. Options to investigate:
   - Custom command template in `~/.cursor/command-templates/` that can be copied to each project's `.cursor/commands/` directory
   - Global `.cursorrules` file in home directory (`~/.cursorrules`) if Cursor supports account-wide rules

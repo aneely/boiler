@@ -199,14 +199,30 @@ For testing and development, helper scripts are available:
 
 ### Running Tests
 
-The project includes a comprehensive test suite (`test_boiler.sh`) with 259 tests covering utility functions, mocked FFmpeg/ffprobe functions, and full integration tests (including second and third pass transcoding scenarios, multiple resolution support, `calculate_adjusted_quality()` and `calculate_interpolated_quality()` unit tests, codec compatibility checking, configurable depth traversal, command-line argument parsing, and error handling tests). The test suite uses function mocking to avoid requiring actual video files or FFmpeg installation, making it suitable for CI/CD environments.
+The project includes two test suites for comprehensive coverage:
 
-To run the test suite:
+**Legacy Suite** (`test_boiler.sh`) - 271 tests, ~6s
+- Quick feedback during development
+- Run with: `bash test_boiler.sh`
+
+**Bats Suite** (`tests/*.bats`) - 217 tests, ~16s parallel
+- Industry-standard bats-core framework with proper test isolation
+- Thorough pre-commit verification
+- Run with: `bats --jobs 8 tests/*.bats` (parallel, recommended)
+- Or: `./run-bats-tests.sh -p` (uses wrapper script)
+
+**Recommended workflow:**
 ```bash
+# During development (quick feedback)
 bash test_boiler.sh
+
+# Before commits (thorough verification)
+bats --jobs 8 tests/*.bats
 ```
 
-The tests verify function behavior through call tracking rather than file side effects, ensuring fast execution and reliable results.
+Both suites use function mocking with file-based call tracking, work without FFmpeg/ffprobe installation (CI/CD ready), and cover utility functions, integration tests, codec compatibility, depth traversal, argument parsing, and error handling.
+
+See [plans/TEST-REFACTOR-PLAN.md](plans/TEST-REFACTOR-PLAN.md) for detailed test suite documentation.
 
 ## Contributing
 
@@ -231,4 +247,5 @@ This modular structure makes the code easier to understand, test, and maintain. 
 
 - [PROJECT-CONTEXT.md](PROJECT-CONTEXT.md) - Technical details, architecture, and design decisions
 - [PLAN.md](PLAN.md) - Development roadmap and future features
+- [plans/TEST-REFACTOR-PLAN.md](plans/TEST-REFACTOR-PLAN.md) - Test suite refactoring plan and results
 
