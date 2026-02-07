@@ -77,7 +77,7 @@ The tool is a modular bash script (`boiler.sh`) organized into focused functions
 6. **Iteratively finds optimal quality** using constant quality mode (`-q:v`)
 7. **Performs multi-pass transcoding** if needed (up to 3 passes with interpolation)
 
-See `docs/TECHNICAL.md` for detailed algorithm documentation.
+See `docs/TECHNICAL.md` for algorithm details and `docs/ARCHITECTURE.md` for structural decomposition.
 
 ---
 
@@ -99,6 +99,7 @@ boiler/
 ├── PLAN.md                # Development roadmap
 ├── README.md              # User documentation
 ├── docs/                  # Technical documentation
+│   ├── ARCHITECTURE.md    # Structural decomposition and functional units
 │   └── TECHNICAL.md       # Algorithm and design details
 ├── tests/                 # Bats test suite (~16s parallel)
 │   ├── helpers/

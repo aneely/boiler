@@ -146,6 +146,12 @@ Create a simplified command-line tool for video transcoding on macOS that:
     - Are there patterns in overcorrection that could be addressed?
   This would enable data-driven optimization of the transcoding algorithm based on real-world usage patterns.
 
+### CLI Subcommand Architecture
+
+- [ ] **Subcommand interface for individual operations**: The modular architecture of `boiler.sh` decomposes naturally into individual subcommands (discover, analyze, transcode, etc.) that could be exposed via CLI, enabling granular control and scripting use cases. Based on the functional unit decomposition documented in `docs/ARCHITECTURE.md`.
+  
+  **See [plans/SUBCOMMAND-INTERFACE-PLAN.md](plans/SUBCOMMAND-INTERFACE-PLAN.md)** for detailed implementation specifications including all 8 proposed subcommands, exit codes, global variable handling strategy, signal handling considerations, and 5-phase implementation plan.
+
 ### Process Control
 
 - [ ] **Suspend/Resume functionality**: Add support for suspending and resuming the transcoding process without terminating it. This would allow users to temporarily pause long-running transcoding jobs to free up system resources, then resume them later without losing progress. Implementation considerations:
