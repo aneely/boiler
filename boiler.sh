@@ -361,7 +361,7 @@ should_skip_file() {
 # Returns all matching video files, one per line
 # Uses GLOBAL_MAX_DEPTH for directory depth (0 = unlimited, default: 2)
 find_all_video_files() {
-    local video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv")
+    local video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv" "mpg" "mpeg" "ts")
     local video_files=()
     local max_depth="${GLOBAL_MAX_DEPTH:-2}"
 
@@ -396,7 +396,7 @@ find_all_video_files() {
 # Returns all skipped video files, one per line
 # Uses GLOBAL_MAX_DEPTH for directory depth (0 = unlimited, default: 2)
 find_skipped_video_files() {
-    local video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv")
+    local video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv" "mpg" "mpeg" "ts")
     local skipped_files=()
     local max_depth="${GLOBAL_MAX_DEPTH:-2}"
 
@@ -532,9 +532,9 @@ is_non_quicklook_format() {
     # Convert to lowercase for comparison (bash 3.2 compatible)
     local ext_lower=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
     
-    # Formats that need remuxing: mkv, wmv, avi, webm, flv
+    # Formats that need remuxing: mkv, wmv, avi, webm, flv, mpg, mpeg, ts
     case "$ext_lower" in
-        mkv|wmv|avi|webm|flv)
+        mkv|wmv|avi|webm|flv|mpg|mpeg|ts)
             return 0  # Needs remuxing
             ;;
         *)
@@ -1407,9 +1407,9 @@ cleanup_samples() {
 #      - If incompatible: transcode at source bitrate for QuickLook compatibility
 #   4. Remove original file after successful processing
 #
-# Supported formats: mkv, wmv, avi, webm, flv
+# Supported formats: mkv, wmv, avi, webm, flv, mpg, mpeg, ts
 preprocess_non_quicklook_files() {
-    local non_quicklook_extensions=("mkv" "wmv" "avi" "webm" "flv")
+    local non_quicklook_extensions=("mkv" "wmv" "avi" "webm" "flv" "mpg" "mpeg" "ts")
     local files_to_check=()
     local remuxed_count=0
     local max_depth="${GLOBAL_MAX_DEPTH:-2}"

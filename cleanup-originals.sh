@@ -159,7 +159,7 @@ move_to_trash() {
 parse_arguments "$@"
 
 # Video file extensions to process
-video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv")
+video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv" "mpg" "mpeg" "ts")
 
 # Get list of directories to check (uses GLOBAL_MAX_DEPTH for configurable depth)
 directories=(".")

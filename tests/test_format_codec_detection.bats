@@ -42,6 +42,21 @@ teardown() {
     assert_success
 }
 
+@test "is_non_quicklook_format: mpg is non-QuickLook format" {
+    run is_non_quicklook_format "video.mpg"
+    assert_success
+}
+
+@test "is_non_quicklook_format: mpeg is non-QuickLook format" {
+    run is_non_quicklook_format "video.mpeg"
+    assert_success
+}
+
+@test "is_non_quicklook_format: ts is non-QuickLook format" {
+    run is_non_quicklook_format "video.ts"
+    assert_success
+}
+
 @test "is_non_quicklook_format: mp4 is QuickLook compatible" {
     run is_non_quicklook_format "video.mp4"
     assert_failure

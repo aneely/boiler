@@ -108,7 +108,7 @@ is_non_quicklook_format() {
     local ext=$(echo "${file##*.}" | tr '[:upper:]' '[:lower:]')
     
     case "$ext" in
-        mkv|wmv|avi|webm|flv)
+        mkv|wmv|avi|webm|flv|mpg|mpeg|ts)
             return 0  # Non-QuickLook format
             ;;
         *)
@@ -323,7 +323,7 @@ main() {
     specified_files=$(parse_arguments "$@")
     
     # Non-QuickLook format extensions
-    local non_quicklook_extensions=("mkv" "wmv" "avi" "webm" "flv")
+    local non_quicklook_extensions=("mkv" "wmv" "avi" "webm" "flv" "mpg" "mpeg" "ts")
     local files_to_process=()
     
     # If files were specified, use those; otherwise find files
@@ -334,7 +334,7 @@ main() {
                 if is_non_quicklook_format "$file"; then
                     files_to_process+=("$file")
                 else
-                    warn "Skipping $file: Not a non-QuickLook format (mkv, wmv, avi, webm, flv)"
+                    warn "Skipping $file: Not a non-QuickLook format (mkv, wmv, avi, webm, flv, mpg, mpeg, ts)"
                 fi
             elif [ -n "$file" ]; then
                 warn "File not found: $file"

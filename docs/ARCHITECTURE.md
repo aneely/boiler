@@ -51,7 +51,7 @@ Functions for determining targets and making processing decisions.
 |----------|---------------|
 | `calculate_target_bitrate()` | Resolution-based target (2160p→11Mbps, 1080p→8Mbps, etc.) |
 | `is_within_tolerance()` | Check if bitrate within ±5% of target |
-| `is_non_quicklook_format()` | Detect MKV, WMV, AVI, WEBM, FLV |
+| `is_non_quicklook_format()` | Detect MKV, WMV, AVI, WEBM, FLV, MPG, MPEG, TS |
 | `is_codec_mp4_compatible()` | Check if codec can be copied to MP4 |
 
 **Output**: Target values (Mbps/bps), boolean decisions (0/1 exit codes)
@@ -246,9 +246,10 @@ esac
 ```
 
 ### Adding New File Formats
-Update `is_non_quicklook_format()` case statement:
+Update `is_non_quicklook_format()` case statement and the `video_extensions` / `non_quicklook_extensions` arrays in `boiler.sh`, `cleanup-originals.sh`, and `remux-only.sh`:
 ```bash
-ts|m2ts)  # Add new format
+# In is_non_quicklook_format():
+m2ts)  # Add new format
     return 0
     ;;
 ```

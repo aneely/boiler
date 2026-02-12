@@ -140,6 +140,8 @@ The tool automatically detects these video file extensions:
 - WebM (`.webm`)
 - FLV (`.flv`)
 - WMV (`.wmv`)
+- MPEG-1/2 (`.mpg`, `.mpeg`)
+- MPEG Transport Stream (`.ts`)
 
 ## Limitations
 

@@ -539,6 +539,24 @@ test_is_non_quicklook_format() {
     set -e
     assert_exit_code $exit_code 0 "is_non_quicklook_format: flv format"
     
+    set +e
+    is_non_quicklook_format "video.mpg"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_non_quicklook_format: mpg format"
+    
+    set +e
+    is_non_quicklook_format "video.mpeg"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_non_quicklook_format: mpeg format"
+    
+    set +e
+    is_non_quicklook_format "video.ts"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_non_quicklook_format: ts format"
+    
     # Test QuickLook-compatible formats (should return 1)
     set +e
     is_non_quicklook_format "video.mp4"
