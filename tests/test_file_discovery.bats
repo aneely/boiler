@@ -72,6 +72,14 @@ run_boiler_func() {
     assert_failure
 }
 
+@test "should_skip_file: skips non-.mp4 original when encoded .mp4 exists" {
+    cd "$TEST_DIR"
+    touch video.mpg video.fmpg.10.25.Mbps.mp4
+    
+    run run_boiler_func should_skip_file "video.mpg"
+    assert_success
+}
+
 # ============================================================================
 # find_all_video_files() tests
 # ============================================================================

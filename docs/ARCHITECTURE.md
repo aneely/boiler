@@ -23,7 +23,7 @@ Functions for finding and filtering video files.
 | `find_all_video_files()` | Discover videos, filter out processed files |
 | `find_skipped_video_files()` | List already-processed files |
 | `should_skip_file()` | Check if file should be skipped based on markers |
-| `has_encoded_version()` | Check if original has encoded companion |
+| `has_encoded_version()` | Check if original has encoded companion (searches for encoded files with `ENCODED_OUTPUT_EXTENSION` (.mp4) so non-.mp4 originals are correctly skipped) |
 | `has_original_file()` | Check if encoded file has original companion |
 | `extract_original_filename()` | Parse encoded filename to get original |
 

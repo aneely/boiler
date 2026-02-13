@@ -122,6 +122,7 @@ boiler/
 - **Transcoded**: `{base}.fmpg.{bitrate}.Mbps.{ext}`
 - **Below target**: `{base}.orig.{bitrate}.Mbps.{ext}`
 - **Markers**: `.fmpg.`, `.orig.`, `.hbrk.` indicate processed files
+- **Encoded output extension**: Transcoded/remuxed output is always `.mp4` (HEVC in MP4 container).
 
 ### Dependencies
 - `ffmpeg`: Video encoding

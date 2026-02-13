@@ -106,3 +106,11 @@ run_boiler_func() {
     run run_boiler_func has_encoded_version "video.mp4"
     assert_success
 }
+
+@test "has_encoded_version: detects encoded .mp4 when original has non-.mp4 extension" {
+    cd "$TEST_DIR"
+    touch video.mpg video.fmpg.10.25.Mbps.mp4
+    
+    run run_boiler_func has_encoded_version "video.mpg"
+    assert_success
+}

@@ -948,6 +948,14 @@ test_extract_and_matching() {
     bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; should_skip_file 'video.mp4'" && result="skip" || result="process"
     assert_equal "$result" "process" "should_skip_file: processes original when no encoded version"
     
+    # Test has_encoded_version and should_skip_file: non-.mp4 original with existing .mp4 encoded version
+    rm -f video.mp4 video.fmpg.10.25.Mbps.mp4
+    touch video.mpg video.fmpg.10.25.Mbps.mp4
+    bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; has_encoded_version 'video.mpg'" && result="has_encoded" || result="no_encoded"
+    assert_equal "$result" "has_encoded" "has_encoded_version: detects encoded .mp4 when original is .mpg"
+    bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; should_skip_file 'video.mpg'" && result="skip" || result="process"
+    assert_equal "$result" "skip" "should_skip_file: skips .mpg original when encoded .mp4 exists"
+    
     # Test find_all_video_files: skips both original and encoded when both exist
     touch video.mp4 video.fmpg.10.25.Mbps.mp4 another.mkv
     local found_files=$(bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; find_all_video_files")

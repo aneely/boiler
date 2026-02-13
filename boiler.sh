@@ -23,6 +23,10 @@ GLOBAL_TARGET_BITRATE_MBPS=""
 # Only set default if not already set (allows environment variable override for testing)
 GLOBAL_MAX_DEPTH="${GLOBAL_MAX_DEPTH:-2}"
 
+# Encoded output extension: transcoded/remuxed output is always .mp4 (HEVC in MP4 container).
+# Used by has_encoded_version() and final output naming so "already transcoded" detection works for non-.mp4 originals.
+ENCODED_OUTPUT_EXTENSION="mp4"
+
 # Cleanup function: kill entire process group on exit/interrupt
 # This automatically kills all child processes (including FFmpeg) without tracking PIDs
 # The -- -$$ syntax means "kill process group of $$ (our PID)"
@@ -314,19 +318,16 @@ has_encoded_version() {
         local maxdepth=1
     fi
     
-    # Extract base name and extension
+    # Extract base name (encoded output is always ENCODED_OUTPUT_EXTENSION, not the original's extension)
     local base_part="${basename%.*}"
-    local ext_part="${basename##*.}"
     
     # Check for encoded versions by looking for files that start with {base}.{marker}
-    # and end with .{ext}
+    # and end with .{ENCODED_OUTPUT_EXTENSION} (transcoded/remuxed output is always .mp4)
     local markers=("fmpg" "orig" "hbrk")
     
     for marker in "${markers[@]}"; do
-        # Use find to look for files matching: {base}.{marker}.*.{ext}
-        # We'll check if any file starts with the base and marker pattern
         local pattern="${base_part}.${marker}."
-        local found=$(find "$search_dir" -maxdepth "$maxdepth" -type f -iname "${pattern}*.${ext_part}" 2>/dev/null | head -1)
+        local found=$(find "$search_dir" -maxdepth "$maxdepth" -type f -iname "${pattern}*.${ENCODED_OUTPUT_EXTENSION}" 2>/dev/null | head -1)
         if [ -n "$found" ]; then
             return 0  # Found encoded version
         fi
@@ -1941,11 +1942,11 @@ transcode_video() {
     
     # Generate final output filename
     # Use .orig. pattern if transcoding for compatibility (source bitrate override), otherwise use .fmpg.
-    # Always use .mp4 extension when transcoding (HEVC in MP4 container)
+    # Always use ENCODED_OUTPUT_EXTENSION when transcoding (HEVC in MP4 container)
     if [ "$needs_transcode_for_compatibility" -eq 1 ]; then
-        OUTPUT_FILE="${BASE_NAME}.orig.${actual_bitrate_mbps}.Mbps.mp4"
+        OUTPUT_FILE="${BASE_NAME}.orig.${actual_bitrate_mbps}.Mbps.${ENCODED_OUTPUT_EXTENSION}"
     else
-        OUTPUT_FILE="${BASE_NAME}.fmpg.${actual_bitrate_mbps}.Mbps.mp4"
+        OUTPUT_FILE="${BASE_NAME}.fmpg.${actual_bitrate_mbps}.Mbps.${ENCODED_OUTPUT_EXTENSION}"
     fi
     
     # Rename temporary file to final filename
