@@ -66,9 +66,16 @@ error() {
     echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
+# Normalize pipeline output: strip newlines/carriage returns and trim leading/trailing whitespace.
+# Reads stdin, writes normalized value to stdout. Used by sanitize_value and bc/printf pipelines.
+# Uses sed instead of xargs so Bats tests run in restricted environments where xargs can fail with sysconf(_SC_ARG_MAX) failed.
+normalize_output() {
+    tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
 # Sanitize value for bc calculations (remove newlines, carriage returns, and trim whitespace)
 sanitize_value() {
-    echo "$1" | tr -d '\n\r' | xargs
+    echo "$1" | normalize_output
 }
 
 # Validate bitrate value
@@ -487,7 +494,7 @@ get_video_duration() {
 # Returns: bitrate in Mbps with 2 decimal places
 bps_to_mbps() {
     local bitrate_bps=$(sanitize_value "$1")
-    echo "scale=2; $bitrate_bps / 1000000" | bc | tr -d '\n\r' | xargs
+    echo "scale=2; $bitrate_bps / 1000000" | bc | normalize_output
 }
 
 # Calculate squared distance between a bitrate and target bitrate
@@ -1048,7 +1055,7 @@ find_optimal_quality() {
                 total_bitrate_bps=$(sanitize_value "$total_bitrate_bps")
                 sample_bitrate_bps=$(sanitize_value "$sample_bitrate_bps")
                 # Add bitrates using bc
-                total_bitrate_bps=$(echo "$total_bitrate_bps + $sample_bitrate_bps" | bc | tr -d '\n\r' | xargs)
+                total_bitrate_bps=$(echo "$total_bitrate_bps + $sample_bitrate_bps" | bc | normalize_output)
                 sample_count=$((sample_count + 1))
             fi
             
@@ -1066,7 +1073,7 @@ find_optimal_quality() {
         local actual_bitrate_bps
         local actual_bitrate_mbps
         if [ "$sample_count" -gt 0 ]; then
-            actual_bitrate_bps=$(echo "scale=0; $total_bitrate_bps / $sample_count" | bc | tr -d '\n\r' | xargs)
+            actual_bitrate_bps=$(echo "scale=0; $total_bitrate_bps / $sample_count" | bc | normalize_output)
             actual_bitrate_mbps=$(bps_to_mbps "$actual_bitrate_bps")
         else
             error "Invalid sample_count for average calculation"
@@ -1106,7 +1113,7 @@ find_optimal_quality() {
             local distance_from_target=$(echo "scale=4; 1 - $ratio" | bc | tr -d '\n\r')
             # Calculate adjustment and round to nearest integer
             local adjustment_float=$(echo "scale=4; $min_step + ($max_step - $min_step) * $distance_from_target" | bc | tr -d '\n\r')
-            quality_adjustment=$(printf "%.0f" "$adjustment_float" | tr -d '\n\r' | xargs)
+            quality_adjustment=$(printf "%.0f" "$adjustment_float" | normalize_output)
             # Ensure it's at least min_step
             if [ "$quality_adjustment" -lt "$min_step" ]; then
                 quality_adjustment=$min_step
@@ -1132,7 +1139,7 @@ find_optimal_quality() {
             fi
             # Calculate adjustment and round to nearest integer
             local adjustment_float=$(echo "scale=4; $min_step + ($max_step - $min_step) * $distance_from_target" | bc | tr -d '\n\r')
-            quality_adjustment=$(printf "%.0f" "$adjustment_float" | tr -d '\n\r' | xargs)
+            quality_adjustment=$(printf "%.0f" "$adjustment_float" | normalize_output)
             # Ensure it's at least min_step
             if [ "$quality_adjustment" -lt "$min_step" ]; then
                 quality_adjustment=$min_step
@@ -1179,7 +1186,7 @@ find_optimal_quality() {
                 local hist_bitrate="${entry#*:}"
                 local dist=$(calculate_squared_distance "$hist_bitrate" "$target_bitrate_bps")
                 local dist_lt_best
-                dist_lt_best=$(echo "$dist < $best_distance" | bc -l 2>/dev/null | tr -d '\n\r' | xargs)
+                dist_lt_best=$(echo "$dist < $best_distance" | bc -l 2>/dev/null | normalize_output)
                 if [ -z "$best_distance" ] || [ "${dist_lt_best:-0}" = "1" ]; then
                     best_quality=$hist_quality
                     best_bitrate_bps=$hist_bitrate
@@ -1239,7 +1246,7 @@ calculate_adjusted_quality() {
         local distance_from_target=$(echo "scale=4; 1 - $ratio" | bc | tr -d '\n\r')
         # Calculate adjustment and round to nearest integer
         local adjustment_float=$(echo "scale=4; $min_step + ($max_step - $min_step) * $distance_from_target" | bc | tr -d '\n\r')
-        quality_adjustment=$(printf "%.0f" "$adjustment_float" | tr -d '\n\r' | xargs)
+        quality_adjustment=$(printf "%.0f" "$adjustment_float" | normalize_output)
         # Ensure it's at least min_step
         if [ "$quality_adjustment" -lt "$min_step" ]; then
             quality_adjustment=$min_step
@@ -1261,7 +1268,7 @@ calculate_adjusted_quality() {
         fi
         # Calculate adjustment and round to nearest integer
         local adjustment_float=$(echo "scale=4; $min_step + ($max_step - $min_step) * $distance_from_target" | bc | tr -d '\n\r')
-        quality_adjustment=$(printf "%.0f" "$adjustment_float" | tr -d '\n\r' | xargs)
+        quality_adjustment=$(printf "%.0f" "$adjustment_float" | normalize_output)
         # Ensure it's at least min_step
         if [ "$quality_adjustment" -lt "$min_step" ]; then
             quality_adjustment=$min_step
@@ -1317,14 +1324,14 @@ calculate_interpolated_quality() {
     if (( $(echo "$bitrate_diff < $min_diff" | bc -l) )) && (( $(echo "$bitrate_diff > -$min_diff" | bc -l) )); then
         # Bitrates too close, use midpoint quality
         local interpolated_quality=$(echo "scale=4; ($quality1 + $quality2) / 2" | bc | tr -d '\n\r')
-        interpolated_quality=$(printf "%.0f" "$interpolated_quality" | tr -d '\n\r' | xargs)
+        interpolated_quality=$(printf "%.0f" "$interpolated_quality" | normalize_output)
     else
         # Calculate interpolation: quality = quality2 + (quality1 - quality2) * (target - bitrate2) / (bitrate1 - bitrate2)
         local quality_diff=$(echo "scale=4; $quality1 - $quality2" | bc | tr -d '\n\r')
         local target_diff=$(echo "scale=4; $target_bitrate_bps - $bitrate2_bps" | bc | tr -d '\n\r')
         local ratio=$(echo "scale=4; $target_diff / $bitrate_diff" | bc | tr -d '\n\r')
         local interpolated_quality_float=$(echo "scale=4; $quality2 + $quality_diff * $ratio" | bc | tr -d '\n\r')
-        interpolated_quality=$(printf "%.0f" "$interpolated_quality_float" | tr -d '\n\r' | xargs)
+        interpolated_quality=$(printf "%.0f" "$interpolated_quality_float" | normalize_output)
     fi
     
     # Clamp to valid range [0, 100]

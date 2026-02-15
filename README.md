@@ -149,6 +149,7 @@ The tool automatically detects these video file extensions:
 - Processes video files in current directory and subdirectories (default: one level deep, configurable via `-L`/`--max-depth` flag; use `-L 0` for unlimited recursive search)
 - Uses hardcoded defaults (not yet configurable via config file, though command-line overrides are available)
 - Audio is always copied (not re-encoded)
+- **QuickLook and audio** – Output is made Quick Look–friendly for video (MP4, faststart, HEVC tag). Audio is always copied, not re-encoded. If the source uses an audio codec that Finder Quick Look doesn’t support in MP4 (e.g. Opus), the file may play in other apps but not in Quick Look. For best Quick Look compatibility, use a source that already has AAC audio.
 
 ## Future Features
 

@@ -4,6 +4,14 @@ All notable changes to this project are documented here. Dates are taken from gi
 
 ---
 
+## 2026-02-15
+
+### Changed
+
+- **Output trimming in boiler.sh (xargs → sed)**: Replaced pipeline trimming that used `xargs` with a single `normalize_output()` helper that strips newlines/carriage returns and trims whitespace via `sed`. All 12 former `tr -d '\n\r' | xargs` call sites now use `| normalize_output`. The helper uses `sed` instead of `xargs` so the Bats test suite runs in restricted environments where `xargs` can fail with `sysconf(_SC_ARG_MAX) failed`. Behavior unchanged; legacy and Bats suites pass locally and in restricted environments.
+
+---
+
 ## 2026-02-03
 
 ### Changed
