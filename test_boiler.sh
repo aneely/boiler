@@ -2206,6 +2206,62 @@ echo ""
 
 echo ""
 
+# ============================================================================
+# remux-select-audio.sh smoke tests (standalone script, not sourced)
+# ============================================================================
+test_remux_select_audio_help() {
+    local out exit_code
+    out=$(./remux-select-audio.sh -h 2>&1)
+    exit_code=$?
+    assert_exit_code $exit_code 0 "remux-select-audio.sh -h exits 0"
+    echo "$out" | grep -q "Usage:"
+    assert_exit_code $? 0 "remux-select-audio.sh -h prints usage"
+}
+test_remux_select_audio_help
+
+test_remux_select_audio_no_args() {
+    local exit_code
+    set +e
+    ./remux-select-audio.sh 2>&1
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "remux-select-audio.sh with no args exits non-zero"
+}
+test_remux_select_audio_no_args
+
+test_remux_select_audio_nothing_to_do() {
+    if ! command -v ffmpeg &> /dev/null || ! command -v ffprobe &> /dev/null; then
+        echo "  (Skipping 0/1 audio tests: ffmpeg/ffprobe not in PATH)"
+        return 0
+    fi
+    local tmp
+    tmp=$(mktemp -d)
+    local one_audio="${tmp}/one_audio.mp4"
+    local no_audio="${tmp}/no_audio.mp4"
+    ffmpeg -f lavfi -i anullsrc=r=44100:cl=stereo -t 1 -c:a aac -y "$one_audio" 2>/dev/null || true
+    ffmpeg -f lavfi -i color=c=black:s=320x240:d=1 -c:v libx264 -y "$no_audio" 2>/dev/null || true
+    if [ -f "$one_audio" ]; then
+        local out exit_code
+        out=$(./remux-select-audio.sh "$one_audio" 2>&1)
+        exit_code=$?
+        assert_exit_code $exit_code 0 "remux-select-audio.sh one audio track exits 0"
+        echo "$out" | grep -qi "nothing to do"
+        assert_exit_code $? 0 "remux-select-audio.sh one audio prints nothing-to-do message"
+    fi
+    if [ -f "$no_audio" ]; then
+        local out exit_code
+        out=$(./remux-select-audio.sh "$no_audio" 2>&1)
+        exit_code=$?
+        assert_exit_code $exit_code 0 "remux-select-audio.sh zero audio tracks exits 0"
+        echo "$out" | grep -qi "nothing to do"
+        assert_exit_code $? 0 "remux-select-audio.sh zero audio prints nothing-to-do message"
+    fi
+    rm -rf "$tmp"
+}
+test_remux_select_audio_nothing_to_do
+
+echo ""
+
 # Print test summary
 echo "=========================================="
 echo "Test Summary:"
