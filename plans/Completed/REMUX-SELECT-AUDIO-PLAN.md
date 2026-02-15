@@ -4,7 +4,7 @@
 
 Add a helper script that takes a **single** video file, lists its **audio** tracks, lets the user choose which to keep, and remuxes to an MP4 that drops the unwanted audio—**without transcoding** (stream copy). Output is Boiler-compatible so the result can be handed to Boiler for batch transcoding. Primary use case: drop commentary or extra language tracks to reduce file size before encoding.
 
-**Status**: Implemented. Output container matches input; all subtitles preserved when not MP4. Keep-all = no-op; video mapping by output format (MP4: first video only + confirmation when multiple; non-MP4: only streams with valid dimensions); video streams shown in header.
+**Status**: Complete. All implementation, tests, and manual verification done. Output container matches input; all subtitles preserved when not MP4. Keep-all = no-op; batching CLI (no-args, -L/--max-depth) aligned with cleanup-originals.
 
 ---
 
@@ -21,7 +21,7 @@ Add a helper script that takes a **single** video file, lists its **audio** trac
 - Bats test added for keep-all no-op. User input trim uses `sed` instead of `xargs` (avoids failures in some environments e.g. Bats sandbox).
 - Iterate over files/directories (multiple args); FFmpeg failure handling (remove failed output, continue/exit). **Batching CLI:** No-argument default (current directory); `-L`/`--max-depth` (default 2, 0 = unlimited); directories to configured depth; tests updated.
 
-**Next session:** Optional manual test; any follow-up tweaks.
+**Next session:** None. Plan complete.
 
 **Key locations in script:**
 - `main()`: option parsing (`-h`, `-L`/`--max-depth`) then positionals; if no positionals, `positionals=(".")`; calls `collect_video_files` then loops over `video_files` with `process_one_file`.
@@ -104,7 +104,7 @@ Add a helper script that takes a **single** video file, lists its **audio** trac
 - [x] **Video streams in header**  
   When presenting the “dashboard” to the user (the screen where they choose audio tracks), show video stream information at the top. Add a helper (e.g. `probe_video_streams`) that uses ffprobe to list video streams with a short label per stream (e.g. codec_name and optional stream_tags title/filename). Display a “Video streams:” section (numbered, 1-based) above “Audio tracks:” so the user sees what video streams exist before choosing audio. Ensures the user understands what “first video stream” means when we strip to one (MP4 case).
 
-- [ ] **Manual test**  
+- [x] **Manual test**  
   Run script on a file with multiple audio tracks (e.g. main + commentary); select one track; confirm output is smaller, plays correctly, includes all subtitles, and is accepted by Boiler (or at least has correct container/codec).
 
 ## Out of Scope (v1)
@@ -112,9 +112,9 @@ Add a helper script that takes a **single** video file, lists its **audio** trac
 - **Subtitle selection**: No listing or picking which subtitles to keep; v1 copies all subtitle streams. Per-track subtitle selection deferred.
 - **Structural clone of remux-only.sh**: No depth, no discovery, no shared sourcing; only output compatibility.
 
-## Future enhancement: Batching CLI (align with cleanup-originals)
+## Future enhancement: Batching CLI (align with cleanup-originals) — DONE
 
-Enhance the current batching behavior so the script’s CLI matches **cleanup-originals.sh**.
+Enhance the current batching behavior so the script’s CLI matches **cleanup-originals.sh**. **Implemented.**
 
 **Behavior:**
 - **No-argument default:** When run with no path arguments, process the **current directory** (`.`): discover video files in the current directory and in subdirectories (according to depth), then prompt per file as today.

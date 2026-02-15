@@ -151,7 +151,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 - [ ] **Subcommand interface for individual operations**: The modular architecture of `boiler.sh` decomposes naturally into individual subcommands (discover, analyze, transcode, etc.) that could be exposed via CLI, enabling granular control and scripting use cases. Based on the functional unit decomposition documented in `docs/ARCHITECTURE.md`.
   
-  **See [plans/SUBCOMMAND-INTERFACE-PLAN.md](plans/SUBCOMMAND-INTERFACE-PLAN.md)** for detailed implementation specifications including all 8 proposed subcommands, exit codes, global variable handling strategy, signal handling considerations, and 5-phase implementation plan.
+  **See [plans/To Do/SUBCOMMAND-INTERFACE-PLAN.md](plans/To%20Do/SUBCOMMAND-INTERFACE-PLAN.md)** for detailed implementation specifications including all 8 proposed subcommands, exit codes, global variable handling strategy, signal handling considerations, and 5-phase implementation plan.
 
 ### Process Control
 

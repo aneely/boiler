@@ -2,7 +2,7 @@
 
 **Status: Complete** (Session 1 + Session 2 done.)
 
-**Location:** This plan lives in the project at [plans/CONTEXT-REFACTOR-PLAN.md](CONTEXT-REFACTOR-PLAN.md) and is the source of truth for the context refactor. Work from this document (not from a Cursor- or tool-specific artifact).
+**Location:** This plan lives in the project at [plans/Completed/CONTEXT-REFACTOR-PLAN.md](CONTEXT-REFACTOR-PLAN.md) and is the source of truth for the context refactor. Work from this document (not from a Cursor- or tool-specific artifact).
 
 ---
 
@@ -51,7 +51,7 @@ So: add **CHANGELOG.md** as a first-class doc. Use it to absorb the “record of
 
 **Recommendation:**
 - **README:** Keep "Running Tests" (how to run, which suite when).
-- **PROJECT-CONTEXT:** Keep "Testing Before Committing" (workflow requirement). Keep a short "Testing" subsection under Current Implementation: purpose, that mocking is used, that tests don’t need FFmpeg. Remove test-count progression from session history. (Do not link to plans/TEST-REFACTOR-PLAN.md—it is a state file for a longer-term test migration, not permanent documentation.)
+- **PROJECT-CONTEXT:** Keep "Testing Before Committing" (workflow requirement). Keep a short "Testing" subsection under Current Implementation: purpose, that mocking is used, that tests don’t need FFmpeg. Remove test-count progression from session history. (Do not link to plans/In Progress/TEST-REFACTOR-PLAN.md—it is a state file for a longer-term test migration, not permanent documentation.)
 - **PLAN:** In Implemented Features, one bullet: "Test suite (legacy + bats); see README for how to run." No duplicate test-count or workflow text.
 
 ### 4. Known issues / limitations
@@ -161,7 +161,7 @@ flowchart LR
 
 ## Suggested Next Steps (When You Implement)
 
-Work from this plan in **plans/CONTEXT-REFACTOR-PLAN.md**.
+Work from this plan in **plans/Completed/CONTEXT-REFACTOR-PLAN.md**.
 
 1. **CHANGELOG.md:** Create in project root. **Lift-and-shift:** move session history, "Recent Major Changes", "Recent Improvements", "Bug Fixes", and PLAN "Recent Changes" into CHANGELOG verbatim (no summarization yet). Then, in a separate step, consider summarizations together before rewriting CHANGELOG (see "Add CHANGELOG.md" above).
 2. **PLAN.md:** Shorten "Implemented Features" (no duplicate defaults; one line for helpers and tests). Replace "Known Issues / Recent Changes" with "Implementation notes" or real known issues only; lift-and-shift “Recent Changes” bullets into CHANGELOG verbatim.
@@ -190,7 +190,7 @@ The lift-and-shift and summarization are split across two sessions:
    - PROJECT-CONTEXT: "Current Session Status", all "Previous Session" blocks, "Recent Major Changes", "Recent Improvements", "Bug Fixes".
    - PLAN: "Recent Changes" bullets from "Known Issues / Recent Changes".
 3. Remove the lifted content from PROJECT-CONTEXT and PLAN (replace with pointers or delete entirely per the plan above).
-4. **Before ending the session:** Update this plan (`plans/CONTEXT-REFACTOR-PLAN.md`) with a "Session 1 Complete" note so the next session knows where we left off.
+4. **Before ending the session:** Update this plan (`plans/Completed/CONTEXT-REFACTOR-PLAN.md`) with a "Session 1 Complete" note so the next session knows where we left off.
 
 ### Session 2: Summarization (Fresh Context)
 

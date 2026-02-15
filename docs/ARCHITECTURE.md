@@ -192,7 +192,7 @@ The modular architecture naturally supports exposing functional units as CLI sub
 **Discovery & Analysis**: `discover`, `analyze`, `target`, `should-skip`
 **Operations**: `remux`, `optimize-quality`, `transcode`, `batch`
 
-**Implementation Status**: Planned - See [plans/SUBCOMMAND-INTERFACE-PLAN.md](../plans/SUBCOMMAND-INTERFACE-PLAN.md) for detailed specifications including:
+**Implementation Status**: Planned - See [plans/To Do/SUBCOMMAND-INTERFACE-PLAN.md](../plans/To%20Do/SUBCOMMAND-INTERFACE-PLAN.md) for detailed specifications including:
 - Subcommand specifications with options and output formats
 - Implementation phases and modified functions
 - Global variable handling strategy

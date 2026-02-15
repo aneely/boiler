@@ -17,7 +17,7 @@ All notable changes to this project are documented here. Dates are taken from gi
 ### Added
 
 - **Bats test suite and dual-suite strategy**: Added bats-core framework (`tests/*.bats`); project now has legacy suite (`test_boiler.sh`) for quick iteration and bats for thorough pre-commit verification. Both use file-based mocking; no FFmpeg/ffprobe required (CI/CD ready). See README for how to run.
-- **CHANGELOG and documentation cleanup**: Introduced CHANGELOG.md as the single place for version history. Reduced overlap between README, PLAN, and PROJECT-CONTEXT per plans/CONTEXT-REFACTOR-PLAN.md: PROJECT-CONTEXT trimmed of session history and duplicate sections; PLAN shortened (defaults/helpers in README, implementation notes only); README links to CHANGELOG. CHANGELOG dates backfilled from git history.
+- **CHANGELOG and documentation cleanup**: Introduced CHANGELOG.md as the single place for version history. Reduced overlap between README, PLAN, and PROJECT-CONTEXT per plans/Completed/CONTEXT-REFACTOR-PLAN.md: PROJECT-CONTEXT trimmed of session history and duplicate sections; PLAN shortened (defaults/helpers in README, implementation notes only); README links to CHANGELOG. CHANGELOG dates backfilled from git history.
 
 ---
 
