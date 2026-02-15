@@ -13,13 +13,16 @@ load "$TESTS_DIR/test_helper/bats-assert/load"
     run "$SCRIPT" -h
     assert_success
     assert_output --partial "Usage:"
-    assert_output --partial "video_file"
+    assert_output --partial "path"
 }
 
-@test "remux-select-audio.sh with no args exits non-zero" {
-    run "$SCRIPT"
+@test "remux-select-audio.sh with no args in empty dir exits non-zero with No video files found" {
+    local tmp
+    tmp=$(mktemp -d)
+    run env -C "$tmp" "$SCRIPT"
     assert_failure
-    assert_output --partial "No input file specified"
+    assert_output --partial "No video files found"
+    rm -rf "$tmp"
 }
 
 @test "remux-select-audio.sh with one audio track exits 0 and prints nothing-to-do" {

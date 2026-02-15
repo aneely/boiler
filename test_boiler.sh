@@ -2220,12 +2220,15 @@ test_remux_select_audio_help() {
 test_remux_select_audio_help
 
 test_remux_select_audio_no_args() {
-    local exit_code
+    local root tmp exit_code
+    root=$(pwd)
+    tmp=$(mktemp -d)
     set +e
-    ./remux-select-audio.sh 2>&1
+    (cd "$tmp" && bash "$root/remux-select-audio.sh" 2>&1)
     exit_code=$?
     set -e
-    assert_exit_code $exit_code 1 "remux-select-audio.sh with no args exits non-zero"
+    assert_exit_code $exit_code 1 "remux-select-audio.sh with no args (empty dir) exits non-zero"
+    rm -rf "$tmp"
 }
 test_remux_select_audio_no_args
 

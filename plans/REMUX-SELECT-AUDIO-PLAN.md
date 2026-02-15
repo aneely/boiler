@@ -10,7 +10,7 @@ Add a helper script that takes a **single** video file, lists its **audio** trac
 
 ## Current state (resume here)
 
-**Script:** `remux-select-audio.sh` (repo root). Single-file remux with audio track selection; output `{base}.remux.{ext}` in same dir (ext matches input: .mkv, .mp4, .webm); original file never deleted.
+**Script:** `remux-select-audio.sh` (repo root). Remux with audio track selection; accepts zero or more paths (default: current directory). With no path, processes current directory using `GLOBAL_MAX_DEPTH` (default 2). Output `{base}.remux.{ext}` in same dir (ext matches input: .mkv, .mp4, .webm); original file never deleted. On FFmpeg failure: error printed, failed output removed, batch continues or script exits non-zero for single file.
 
 **Done:**
 - CLI (one file, `-h`), requirements (ffmpeg/ffprobe), probe audio (CSV), 0/1-audio early exit, display + prompt, validation, video codec check, output path, ffmpeg build/run, HEVC tag only when exactly one video stream and it's HEVC, success message, README/PLAN, smoke tests in legacy + Bats.
@@ -19,11 +19,14 @@ Add a helper script that takes a **single** video file, lists its **audio** trac
 - Video mapping: MP4 → `-map 0:v:0`; non-MP4 → only video streams with valid width/height (`get_muxable_video_stream_indices`) to avoid attached-pic streams with no dimensions breaking the Matroska muxer. MP4 + multiple video streams → warn and require user to type `yes` before remuxing.
 - Video streams in header: `probe_video_streams`; "Video streams:" section (numbered, 1-based) above "Audio tracks:" in the display.
 - Bats test added for keep-all no-op. User input trim uses `sed` instead of `xargs` (avoids failures in some environments e.g. Bats sandbox).
+- Iterate over files/directories (multiple args); FFmpeg failure handling (remove failed output, continue/exit). **Batching CLI:** No-argument default (current directory); `-L`/`--max-depth` (default 2, 0 = unlimited); directories to configured depth; tests updated.
 
-**Remaining (next session):**
-1. **Manual test**: Run on a real multi-track file (e.g. MKV with multiple audio + subtitles); select one audio; confirm remux completes, output plays, all subtitles present, and optionally that Boiler accepts it. Then commit if desired.
+**Next session:** Optional manual test; any follow-up tweaks.
 
 **Key locations in script:**
+- `main()`: option parsing (`-h`, `-L`/`--max-depth`) then positionals; if no positionals, `positionals=(".")`; calls `collect_video_files` then loops over `video_files` with `process_one_file`.
+- `collect_video_files` (lines ~142–167): takes path args; for each dir uses `find "$arg" -maxdepth 1 -type f -iname "*.${ext}"`; for each file checks `is_video_file`. No depth parameter; no “no args” case.
+- `show_usage`: documents `Usage: $0 [-h] <path> [path ...]` and “Requires at least one path.”
 - FFmpeg map building: video map branches on `output_format` (MP4: `-map 0:v:0`; non-MP4: loop over `get_muxable_video_stream_indices`); then selected `-map 0:a:N`; then subtitles; `-c copy`; MP4-only options when output_format is mp4.
 - Helpers: `get_video_codec`, `is_codec_mp4_compatible`, `count_video_streams`, `get_muxable_video_stream_indices`, `probe_video_streams`, `probe_audio_streams`, `count_audio_streams`, `get_output_format_from_input`, `probe_subtitle_codecs`, `is_subtitle_codec_mp4_compatible`.
 
@@ -106,9 +109,35 @@ Add a helper script that takes a **single** video file, lists its **audio** trac
 
 ## Out of Scope (v1)
 
-- **Batching / multiple files**: Single file only.
 - **Subtitle selection**: No listing or picking which subtitles to keep; v1 copies all subtitle streams. Per-track subtitle selection deferred.
 - **Structural clone of remux-only.sh**: No depth, no discovery, no shared sourcing; only output compatibility.
+
+## Future enhancement: Batching CLI (align with cleanup-originals)
+
+Enhance the current batching behavior so the script’s CLI matches **cleanup-originals.sh**.
+
+**Behavior:**
+- **No-argument default:** When run with no path arguments, process the **current directory** (`.`): discover video files in the current directory and in subdirectories (according to depth), then prompt per file as today.
+- **Default depth:** Traverse **two levels deep** by default (current directory plus one level of subdirectories). Same meaning as cleanup-originals: `GLOBAL_MAX_DEPTH=2` → current dir + immediate subdirs.
+- **Configurable depth:** Add **`-L` / `--max-depth` DEPTH**. Non-negative integer; **0 = unlimited** (full recursive); default when not specified is 2. Validate depth (reject negative, non-integer) and document in usage.
+- **Explicit paths still supported:** If one or more path arguments (files or directories) are given, collect video files from those paths. When a path is a directory, search it up to the **configured depth** (not maxdepth-1 only). With no arguments, treat current directory as the single root and apply the same depth rule.
+
+**Implementation checklist (for next session):**
+1. **Global and validation:** Add `GLOBAL_MAX_DEPTH="${GLOBAL_MAX_DEPTH:-2}"` near top of script (after set -e / before first function). Add `validate_depth()` (non-empty, non-negative integer; 0 allowed). Copy logic from cleanup-originals.sh lines 41–54.
+2. **Argument parsing:** Parse **options before positionals**. In main(), handle `-L`/`--max-depth` and set `GLOBAL_MAX_DEPTH` (require value, validate, shift 2). Handle `-h`/`--help` as now. Any non-option arg is a positional (file or directory). **If no positionals after parsing,** set `positionals=(".")` so default is current directory.
+3. **Usage:** Update show_usage: usage line e.g. `$0 [-h] [-L DEPTH] [path ...]`; document that with no path, current directory is used; add `-L, --max-depth DEPTH` (default 2, 0 = unlimited); add examples: `$0`, `$0 -L 1`, `$0 -L 0`, `$0 dir1 file.mkv`.
+4. **collect_video_files:** Add a second “mode” or parameter for depth. When building the file list from **directory** arguments: use `max_depth="${GLOBAL_MAX_DEPTH:-2}"`. For each directory arg, build directory list like cleanup-originals: if depth 0, `find "$dir" -type d` (all subdirs); else `find "$dir" -mindepth 1 -maxdepth $((max_depth - 1)) -type d` (subdirs up to depth-1), plus the dir itself. Then for each of those directories, `find "$d" -maxdepth 1 -type f -iname "*.${ext}"` for each VIDEO_EXTENSIONS. Keep existing behavior for **file** args (add if is_video_file). Preserve order (e.g. current dir first, then subdirs; or match cleanup-originals order). Reference: cleanup-originals.sh lines 164–216 (directory list build, then per-dir find).
+5. **Tests:** If script is invoked with no args, it now uses "." and may exit 0 with “No video files found” (or process files). Update legacy and Bats tests that currently expect “No path specified” and exit non-zero for no args: either (a) change expectation to “no args → run on cwd; if cwd has no videos, exit with ‘No video files found’ and non-zero” or (b) keep a test that no args in an empty/no-video dir gives “No video files found”. Ensure `-h` and one-file/zero-audio/keep-all tests still pass.
+6. **README:** If helper script section documents remux-select-audio, add one line: can be run with no arguments (current directory, two levels deep) or `-L`/`--max-depth` and path(s).
+
+**Reference: cleanup-originals.sh**
+- Lines 9–12: `GLOBAL_MAX_DEPTH` default.
+- Lines 41–54: `validate_depth()`.
+- Lines 65–68, 91–111: usage text and parse_arguments for `-L`/`--max-depth`.
+- Lines 164–188: build `directories` array (`.` plus find with mindepth/maxdepth for subdirs).
+- Lines 199–216: per-dir `find "$dir" -maxdepth 1 -type f -iname "*.${ext}"`.
+
+Preserve existing behavior: prompt for audio selection per file (no auto-advance); FFmpeg failure handling unchanged; `process_one_file` unchanged.
 
 ## Success Criteria
 
@@ -151,7 +180,7 @@ Add a helper script that takes a **single** video file, lists its **audio** trac
 ---
 ## Session handoff / Implementation notes
 
-**When resuming:** Read `PROJECT-CONTEXT.md` (testing before commit is mandatory) and this plan’s “Current state (resume here)” above. **Next work:** Run manual test on a real multi-track file (e.g. MKV with multiple audio + subtitles; Blockers-style). Select one audio track; confirm remux completes without "dimensions not set" or mux errors, output plays, and all expected subtitles are present. Run `bash test_boiler.sh` and `bats tests/test_remux_select_audio_smoke.bats` before commit. No further implementation tasks for this feature set unless manual test reveals issues.
+**When resuming (any session):** (1) Read **PROJECT-CONTEXT.md** (testing before commit is mandatory; run full test suites before committing) and this plan’s “Current state (resume here)” above; read **Future enhancement: Batching CLI** when implementing that work. **Next work (this plan):** Implement **Future enhancement: Batching CLI (align with cleanup-originals)**. Follow the implementation checklist in that section. Key file: `remux-select-audio.sh` (main, collect_video_files, show_usage; add GLOBAL_MAX_DEPTH, validate_depth, option parsing for -L/--max-depth). Reference: `cleanup-originals.sh` (lines noted in Future enhancement). After implementing: run `bash test_boiler.sh` and `bats tests/test_remux_select_audio_smoke.bats`; fix or update tests as needed (no-args behavior—see checklist item 5). Update README if usage changes (checklist item 6).
 
 **Reuse from remux-only.sh (already done in script):**
 - Video codec: `get_video_codec()` (ffprobe `-select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1`).
@@ -165,7 +194,7 @@ Use `-select_streams a` and machine-parseable output. Example (JSON):
 Audio stream indices in ffmpeg are 0-based within type (e.g. first audio = `0:a:0`, second = `0:a:1`). Parse and display 1-based to user; convert back to 0-based for `-map 0:a:N`.
 
 **Output naming:**  
-Recommend `{base}.remux.mp4` (same directory as input). No bitrate/duration needed; keeps script simple and no `bc` dependency. Reject if output path equals input (or would overwrite input).
+`{base}.remux.{ext}` (same directory as input; ext matches input container). No bitrate/duration needed; no `bc` dependency. Reject if output path equals input (or would overwrite input).
 
 **Smoke-test fixtures:**  
 Repo `testdata/` has no video files (only `video-attribution-cc-license.txt`). For “0 or 1 audio track” tests, create minimal files in a temp dir: (1) one audio track: `ffmpeg -f lavfi -i anullsrc=r=44100:cl=stereo -t 1 -c:a aac -y /tmp/one_audio.mp4`; (2) zero audio: e.g. `ffmpeg -f lavfi -i color=c=black:s=320x240:d=1 -c:v libx264 -y /tmp/no_audio.mp4`. Then run script on those paths and assert exit 0 and “nothing to do” message. No real multi-track video required for CI.
