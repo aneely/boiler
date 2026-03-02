@@ -27,7 +27,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Multi-point sampling (beginning, middle, end) for accurate bitrate prediction
 - [x] HEVC via Apple VideoToolbox (hardware-accelerated on macOS)
 - [x] MP4 container format
-- [x] Audio stream copying (no re-encoding)
+- [x] Audio: All audio streams copied (no re-encoding)
 - [x] Color-coded output messages
 - [x] Error handling and validation
 - [x] Early exit check: Skip transcoding if source video is already within ±5% of target bitrate
@@ -185,8 +185,8 @@ Create a simplified command-line tool for video transcoding on macOS that:
 ### Development Workflow
 
 - [x] **Test suite refactoring for speed and independence**: Implemented dual test suite strategy with bats-core framework.
-  - **Legacy suite** (`test_boiler.sh`): 271 tests, ~6s, quick feedback during development
-  - **Bats suite** (`tests/*.bats`): 217 tests, ~16s parallel, thorough pre-commit verification with proper isolation
+  - **Legacy suite** (`test_boiler.sh`): 283 tests, ~6s, quick feedback during development
+  - **Bats suite** (`tests/*.bats`): 227 tests, ~16s parallel, thorough pre-commit verification with proper isolation
   - **Recommended workflow**: Run legacy for rapid iteration, bats before commits
   - **Both suites**: Use same mocking approach, work without FFmpeg/ffprobe, comprehensive coverage
 - [ ] **Account-wide Cursor configuration for "remember what you need to" convention**: Explore options for making the PROJECT-CONTEXT.md/PLAN.md/README.md update convention reusable across projects. Options to investigate:

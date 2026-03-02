@@ -129,6 +129,8 @@ boiler/
 - `ffprobe`: Video analysis
 - `bc`: Bitrate calculations
 
+**Audio**: All audio streams are copied when transcoding and remuxing (explicit `-map 0:v:0` and `-map 0:a` in `transcode_sample()`, `transcode_full_video()`, and `remux_to_mp4()`; `count_audio_streams()` used to omit audio map when source has none).
+
 ---
 
 ## Known Issues

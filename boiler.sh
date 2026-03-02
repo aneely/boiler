@@ -581,6 +581,22 @@ get_video_codec() {
     ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$file_path" 2>/dev/null | head -1 | tr -d '\n\r'
 }
 
+# Count audio streams in a video file (for explicit -map so all tracks are copied)
+# Arguments: file_path
+# Returns: number of audio streams (0 if none or on error)
+count_audio_streams() {
+    local input="$1"
+    local csv
+    csv=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$input" 2>/dev/null) || true
+    if [ -z "$csv" ]; then
+        echo "0"
+        return 0
+    fi
+    local n=0
+    for _ in $(echo "$csv" | tr ',' ' '); do n=$((n + 1)); done
+    echo "$n"
+}
+
 # Handle non-QuickLook format files that are at/below target bitrate
 # Handle non-QuickLook format files at or below target bitrate
 #
@@ -691,9 +707,13 @@ remux_to_mp4() {
         return 1
     fi
     
-    # Build ffmpeg command: copy all streams, add QuickLook compatibility flags
-    # Start with base command
-    local ffmpeg_args=(-i "$input_file" -c:v copy -c:a copy -movflags +faststart)
+    # Build ffmpeg command: explicit stream mapping (first video + all audio) then copy, add QuickLook compatibility flags
+    # Without -map, FFmpeg default stream selection picks only one audio track; mapping all preserves multi-track audio
+    local num_audio
+    num_audio=$(count_audio_streams "$input_file")
+    local ffmpeg_args=(-i "$input_file" -map 0:v:0)
+    [ "$num_audio" -gt 0 ] && ffmpeg_args+=(-map 0:a)
+    ffmpeg_args+=(-c:v copy -c:a copy -movflags +faststart)
     
     # Add HEVC tag if video codec is HEVC/H.265 for QuickLook compatibility
     # Convert to lowercase for comparison (bash 3.2 compatible)
@@ -937,10 +957,17 @@ transcode_sample() {
     local quality_value="$4"
     local output_file="$5"
     
+    # Explicit stream mapping: first video stream + all audio streams (avoids default selection picking only one audio track)
+    local num_audio
+    num_audio=$(count_audio_streams "$video_file")
+    local map_args=(-map 0:v:0)
+    [ "$num_audio" -gt 0 ] && map_args+=(-map 0:a)
+    
     # Input seeking: -ss before -i makes seeking much faster, especially for later samples
     # -q:v: Constant quality mode (0-100, higher = higher quality/bitrate)
     ffmpeg -y -ss "$sample_start" \
         -i "$video_file" \
+        "${map_args[@]}" \
         -t $sample_duration \
         -c:v hevc_videotoolbox \
         -q:v ${quality_value} \
@@ -1371,8 +1398,15 @@ transcode_full_video() {
     local output_file="$2"
     local quality_value="$3"
     
+    # Explicit stream mapping: first video stream + all audio streams (avoids default selection picking only one audio track)
+    local num_audio
+    num_audio=$(count_audio_streams "$video_file")
+    local map_args=(-map 0:v:0)
+    [ "$num_audio" -gt 0 ] && map_args+=(-map 0:a)
+    
     # -q:v: Constant quality mode (0-100, higher = higher quality/bitrate)
     ffmpeg -i "$video_file" \
+        "${map_args[@]}" \
         -c:v hevc_videotoolbox \
         -q:v ${quality_value} \
         -c:a copy \

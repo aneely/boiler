@@ -4,6 +4,14 @@ All notable changes to this project are documented here. Dates are taken from gi
 
 ---
 
+## 2026-03-02
+
+### Fixed
+
+- **Multiple audio streams**: Transcoding and remuxing now copy all audio streams instead of only one. Previously, FFmpeg was invoked with `-c:a copy` and no explicit `-map`, so default stream selection chose a single audio track (and it could be the wrong one). The script now uses explicit mapping: `-map 0:v:0` (first video stream) and `-map 0:a` (all audio streams) when at least one audio stream exists. Applied in `transcode_sample()`, `transcode_full_video()`, and `remux_to_mp4()` in `boiler.sh`. Added `count_audio_streams()` helper so `-map 0:a` is omitted when the source has no audio (avoids FFmpeg error).
+
+---
+
 ## 2026-02-15
 
 ### Changed
