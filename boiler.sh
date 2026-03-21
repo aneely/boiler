@@ -581,6 +581,56 @@ get_video_codec() {
     ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$file_path" 2>/dev/null | head -1 | tr -d '\n\r'
 }
 
+# Get audio codec name from a video file
+# Arguments: file_path
+# Returns: codec name (or empty string if unavailable)
+get_audio_codec() {
+    local file_path="$1"
+    ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$file_path" 2>/dev/null | head -1 | tr -d '\n\r'
+}
+
+# Check if audio codec is compatible with MP4 container (can be copied without transcoding)
+# Arguments: codec_name
+# Returns: 0 if compatible, 1 if not compatible
+is_audio_codec_mp4_compatible() {
+    local codec="$1"
+    local codec_lower=$(echo "$codec" | tr '[:upper:]' '[:lower:]')
+
+    # Audio codecs known to be incompatible with MP4 container
+    case "$codec_lower" in
+        wmav1|wmav2|wmalossless|wmapro|vorbis|adpcm_ms)
+            return 1  # Not compatible with MP4
+            ;;
+        *)
+            # Unknown or known-compatible codec (aac, ac3, eac3, mp3, mp2, alac, flac, opus, pcm_*)
+            return 0
+            ;;
+    esac
+}
+
+# Determine audio codec argument for ffmpeg based on source audio compatibility
+# Returns "copy" if audio can be copied into MP4, "aac" if it must be re-encoded
+# Arguments: file_path
+# Returns: "copy" or "aac" (printed to stdout)
+get_audio_codec_arg() {
+    local file_path="$1"
+    local audio_codec
+    audio_codec=$(get_audio_codec "$file_path")
+
+    # If no audio codec detected, default to copy (no audio or detection failed)
+    if [ -z "$audio_codec" ]; then
+        echo "copy"
+        return
+    fi
+
+    if ! is_audio_codec_mp4_compatible "$audio_codec"; then
+        warn "Audio codec '$audio_codec' is not compatible with MP4 container. Re-encoding audio to AAC."
+        echo "aac"
+    else
+        echo "copy"
+    fi
+}
+
 # Count audio streams in a video file (for explicit -map so all tracks are copied)
 # Arguments: file_path
 # Returns: number of audio streams (0 if none or on error)
@@ -711,9 +761,11 @@ remux_to_mp4() {
     # Without -map, FFmpeg default stream selection picks only one audio track; mapping all preserves multi-track audio
     local num_audio
     num_audio=$(count_audio_streams "$input_file")
+    local audio_codec_arg
+    audio_codec_arg=$(get_audio_codec_arg "$input_file")
     local ffmpeg_args=(-i "$input_file" -map 0:v:0)
     [ "$num_audio" -gt 0 ] && ffmpeg_args+=(-map 0:a)
-    ffmpeg_args+=(-c:v copy -c:a copy -movflags +faststart)
+    ffmpeg_args+=(-c:v copy -c:a "$audio_codec_arg" -movflags +faststart)
     
     # Add HEVC tag if video codec is HEVC/H.265 for QuickLook compatibility
     # Convert to lowercase for comparison (bash 3.2 compatible)
@@ -726,7 +778,18 @@ remux_to_mp4() {
     ffmpeg_args+=(-f mp4 "$output_file")
     
     # Execute ffmpeg command
-    ffmpeg "${ffmpeg_args[@]}" -loglevel info -stats
+    local ffmpeg_exit=0
+    ffmpeg "${ffmpeg_args[@]}" -loglevel info -stats || ffmpeg_exit=$?
+
+    if [ "$ffmpeg_exit" -ne 0 ]; then
+        error "FFmpeg remux failed (exit code $ffmpeg_exit) for $input_file"
+        return 1
+    fi
+
+    if [ ! -f "$output_file" ] || [ ! -s "$output_file" ]; then
+        error "FFmpeg remux produced no output for $input_file"
+        return 1
+    fi
 }
 
 # Backward compatibility alias (for existing code that calls remux_mkv_to_mp4)
@@ -943,7 +1006,7 @@ calculate_sample_points() {
 # Encoding settings:
 #   - Video: HEVC via VideoToolbox (-c:v hevc_videotoolbox)
 #   - Quality: Constant quality mode (-q:v, 0-100 scale)
-#   - Audio: Copy without transcoding (-c:a copy)
+#   - Audio: Copy if compatible with MP4, otherwise re-encode to AAC
 #   - Container: MP4 with faststart for QuickLook (-movflags +faststart)
 #
 # Note: Uses input seeking (-ss before -i) which is faster than output seeking
@@ -960,22 +1023,35 @@ transcode_sample() {
     # Explicit stream mapping: first video stream + all audio streams (avoids default selection picking only one audio track)
     local num_audio
     num_audio=$(count_audio_streams "$video_file")
+    local audio_codec_arg
+    audio_codec_arg=$(get_audio_codec_arg "$video_file")
     local map_args=(-map 0:v:0)
     [ "$num_audio" -gt 0 ] && map_args+=(-map 0:a)
-    
+
     # Input seeking: -ss before -i makes seeking much faster, especially for later samples
     # -q:v: Constant quality mode (0-100, higher = higher quality/bitrate)
+    local ffmpeg_exit=0
     ffmpeg -y -ss "$sample_start" \
         -i "$video_file" \
         "${map_args[@]}" \
         -t $sample_duration \
         -c:v hevc_videotoolbox \
         -q:v ${quality_value} \
-        -c:a copy \
+        -c:a "$audio_codec_arg" \
         -movflags +faststart \
         -f mp4 \
         "$output_file" \
-        -loglevel error -stats
+        -loglevel error -stats || ffmpeg_exit=$?
+
+    if [ "$ffmpeg_exit" -ne 0 ]; then
+        error "FFmpeg sample transcoding failed (exit code $ffmpeg_exit) for $video_file"
+        return 1
+    fi
+
+    if [ ! -f "$output_file" ] || [ ! -s "$output_file" ]; then
+        error "FFmpeg sample transcoding produced no output for $video_file"
+        return 1
+    fi
 }
 
 # Measure bitrate from a sample file
@@ -1385,7 +1461,7 @@ calculate_interpolated_quality() {
 # Encoding settings:
 #   - Video: HEVC via VideoToolbox (-c:v hevc_videotoolbox)
 #   - Quality: Constant quality mode (-q:v, 0-100 scale)
-#   - Audio: Copy without transcoding (-c:a copy)
+#   - Audio: Copy if compatible with MP4, otherwise re-encode to AAC
 #   - Container: MP4 with faststart and HEVC tagging
 #     * -movflags +faststart: Metadata at beginning for QuickLook
 #     * -tag:v hvc1: Proper HEVC codec tag for macOS compatibility
@@ -1401,20 +1477,33 @@ transcode_full_video() {
     # Explicit stream mapping: first video stream + all audio streams (avoids default selection picking only one audio track)
     local num_audio
     num_audio=$(count_audio_streams "$video_file")
+    local audio_codec_arg
+    audio_codec_arg=$(get_audio_codec_arg "$video_file")
     local map_args=(-map 0:v:0)
     [ "$num_audio" -gt 0 ] && map_args+=(-map 0:a)
-    
+
     # -q:v: Constant quality mode (0-100, higher = higher quality/bitrate)
+    local ffmpeg_exit=0
     ffmpeg -i "$video_file" \
         "${map_args[@]}" \
         -c:v hevc_videotoolbox \
         -q:v ${quality_value} \
-        -c:a copy \
+        -c:a "$audio_codec_arg" \
         -movflags +faststart \
         -tag:v hvc1 \
         -f mp4 \
         "$output_file" \
-        -loglevel info -stats
+        -loglevel info -stats || ffmpeg_exit=$?
+
+    if [ "$ffmpeg_exit" -ne 0 ]; then
+        error "FFmpeg transcoding failed (exit code $ffmpeg_exit) for $video_file"
+        return 1
+    fi
+
+    if [ ! -f "$output_file" ] || [ ! -s "$output_file" ]; then
+        error "FFmpeg transcoding produced no output for $video_file"
+        return 1
+    fi
 }
 
 # Clean up sample files

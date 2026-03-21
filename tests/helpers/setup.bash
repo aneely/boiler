@@ -41,6 +41,7 @@ common_setup() {
     unset MOCK_SECOND_PASS_BITRATE_BPS
     unset MOCK_THIRD_PASS_BITRATE_BPS
     unset MOCK_VIDEO_CODEC
+    unset MOCK_AUDIO_CODEC
     unset MOCK_VIDEO_FILE
     
     # Reset global variables that might be set by tests

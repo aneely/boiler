@@ -124,6 +124,25 @@ assert_exit_code() {
     fi
 }
 
+assert_exit_code_nonzero() {
+    local actual_exit="$1"
+    local test_name="$2"
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+
+    if [ "$actual_exit" -ne 0 ]; then
+        echo -e "${GREEN}✓${NC} $test_name"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        return 0
+    else
+        echo -e "${RED}✗${NC} $test_name"
+        echo -e "  Expected non-zero exit code"
+        echo -e "  Actual exit code: $actual_exit"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        return 1
+    fi
+}
+
 # Set test mode to prevent main() from running when we source boiler.sh
 export BOILER_TEST_MODE=1
 
@@ -649,6 +668,216 @@ test_is_codec_mp4_compatible() {
     assert_exit_code $exit_code 0 "is_codec_mp4_compatible: unknown codec (assumes compatible)"
 }
 test_is_codec_mp4_compatible
+
+echo ""
+
+# Test is_audio_codec_mp4_compatible()
+echo "Testing is_audio_codec_mp4_compatible()..."
+test_is_audio_codec_mp4_compatible() {
+    local exit_code
+
+    # Test compatible audio codecs (should return 0)
+    set +e
+    is_audio_codec_mp4_compatible "aac"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_audio_codec_mp4_compatible: aac codec"
+
+    set +e
+    is_audio_codec_mp4_compatible "ac3"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_audio_codec_mp4_compatible: ac3 codec"
+
+    set +e
+    is_audio_codec_mp4_compatible "mp3"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_audio_codec_mp4_compatible: mp3 codec"
+
+    set +e
+    is_audio_codec_mp4_compatible "eac3"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_audio_codec_mp4_compatible: eac3 codec"
+
+    set +e
+    is_audio_codec_mp4_compatible "alac"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_audio_codec_mp4_compatible: alac codec"
+
+    set +e
+    is_audio_codec_mp4_compatible "flac"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_audio_codec_mp4_compatible: flac codec"
+
+    set +e
+    is_audio_codec_mp4_compatible "opus"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_audio_codec_mp4_compatible: opus codec"
+
+    set +e
+    is_audio_codec_mp4_compatible "AAC"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_audio_codec_mp4_compatible: AAC codec (case insensitive)"
+
+    # Test incompatible audio codecs (should return 1)
+    set +e
+    is_audio_codec_mp4_compatible "wmav2"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "is_audio_codec_mp4_compatible: wmav2 codec (incompatible)"
+
+    set +e
+    is_audio_codec_mp4_compatible "wmav1"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "is_audio_codec_mp4_compatible: wmav1 codec (incompatible)"
+
+    set +e
+    is_audio_codec_mp4_compatible "vorbis"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "is_audio_codec_mp4_compatible: vorbis codec (incompatible)"
+
+    set +e
+    is_audio_codec_mp4_compatible "WMAV2"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "is_audio_codec_mp4_compatible: WMAV2 codec (incompatible, case insensitive)"
+
+    set +e
+    is_audio_codec_mp4_compatible "wmalossless"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "is_audio_codec_mp4_compatible: wmalossless codec (incompatible)"
+
+    set +e
+    is_audio_codec_mp4_compatible "wmapro"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "is_audio_codec_mp4_compatible: wmapro codec (incompatible)"
+
+    set +e
+    is_audio_codec_mp4_compatible "adpcm_ms"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 1 "is_audio_codec_mp4_compatible: adpcm_ms codec (incompatible)"
+
+    # Test unknown codec (should return 0 - assume compatible)
+    set +e
+    is_audio_codec_mp4_compatible "some_future_codec"
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "is_audio_codec_mp4_compatible: unknown codec (assumes compatible)"
+}
+test_is_audio_codec_mp4_compatible
+
+echo ""
+
+# Test FFmpeg error handling in transcode_sample(), transcode_full_video(), remux_to_mp4()
+echo "Testing FFmpeg error handling..."
+
+# Helper: run a boiler.sh function in a subshell with a custom ffmpeg/ffprobe override
+run_with_ffmpeg_override() {
+    local ffmpeg_body="$1"
+    local func_name="$2"
+    shift 2
+    bash -c "
+        set +e
+        export BOILER_TEST_MODE=1
+        source '$(pwd)/boiler.sh' 2>/dev/null
+        ffmpeg() { $ffmpeg_body; }
+        ffprobe() {
+            if [[ \"\$*\" == *codec_name* ]] && [[ \"\$*\" == *select_streams\ a* ]]; then
+                echo 'aac'
+            elif [[ \"\$*\" == *codec_name* ]]; then
+                echo 'h264'
+            elif [[ \"\$*\" == *csv=p=0* ]]; then
+                echo '1'
+            else
+                echo ''
+            fi
+        }
+        $func_name \"\$@\"
+    " -- "$@" 2>/dev/null
+}
+
+test_ffmpeg_error_handling() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    local exit_code
+
+    # --- transcode_sample ---
+
+    # ffmpeg fails (exit code 1) → should return non-zero
+    set +e
+    run_with_ffmpeg_override "return 1" transcode_sample "$tmpdir/input.mp4" "10" "5" "60" "$tmpdir/sample_out.mp4"
+    exit_code=$?
+    set -e
+    assert_exit_code_nonzero $exit_code "transcode_sample: returns non-zero when ffmpeg fails"
+
+    # ffmpeg succeeds but output file missing → should return non-zero
+    set +e
+    run_with_ffmpeg_override "return 0" transcode_sample "$tmpdir/input.mp4" "10" "5" "60" "$tmpdir/sample_out2.mp4"
+    exit_code=$?
+    set -e
+    assert_exit_code_nonzero $exit_code "transcode_sample: returns non-zero when output file is missing"
+
+    # ffmpeg succeeds but output file is zero bytes → should return non-zero
+    set +e
+    run_with_ffmpeg_override "touch '$tmpdir/sample_out3.mp4'; return 0" transcode_sample "$tmpdir/input.mp4" "10" "5" "60" "$tmpdir/sample_out3.mp4"
+    exit_code=$?
+    set -e
+    assert_exit_code_nonzero $exit_code "transcode_sample: returns non-zero when output file is zero bytes"
+
+    # --- transcode_full_video ---
+
+    set +e
+    run_with_ffmpeg_override "return 1" transcode_full_video "$tmpdir/input.mp4" "$tmpdir/full_out.mp4" "60"
+    exit_code=$?
+    set -e
+    assert_exit_code_nonzero $exit_code "transcode_full_video: returns non-zero when ffmpeg fails"
+
+    set +e
+    run_with_ffmpeg_override "return 0" transcode_full_video "$tmpdir/input.mp4" "$tmpdir/full_out2.mp4" "60"
+    exit_code=$?
+    set -e
+    assert_exit_code_nonzero $exit_code "transcode_full_video: returns non-zero when output file is missing"
+
+    set +e
+    run_with_ffmpeg_override "touch '$tmpdir/full_out3.mp4'; return 0" transcode_full_video "$tmpdir/input.mp4" "$tmpdir/full_out3.mp4" "60"
+    exit_code=$?
+    set -e
+    assert_exit_code_nonzero $exit_code "transcode_full_video: returns non-zero when output file is zero bytes"
+
+    # --- remux_to_mp4 ---
+
+    set +e
+    run_with_ffmpeg_override "return 1" remux_to_mp4 "$tmpdir/input.mkv" "$tmpdir/remux_out.mp4"
+    exit_code=$?
+    set -e
+    assert_exit_code_nonzero $exit_code "remux_to_mp4: returns non-zero when ffmpeg fails"
+
+    set +e
+    run_with_ffmpeg_override "return 0" remux_to_mp4 "$tmpdir/input.mkv" "$tmpdir/remux_out2.mp4"
+    exit_code=$?
+    set -e
+    assert_exit_code_nonzero $exit_code "remux_to_mp4: returns non-zero when output file is missing"
+
+    set +e
+    run_with_ffmpeg_override "touch '$tmpdir/remux_out3.mp4'; return 0" remux_to_mp4 "$tmpdir/input.mkv" "$tmpdir/remux_out3.mp4"
+    exit_code=$?
+    set -e
+    assert_exit_code_nonzero $exit_code "remux_to_mp4: returns non-zero when output file is zero bytes"
+
+    rm -rf "$tmpdir"
+}
+test_ffmpeg_error_handling
 
 echo ""
 

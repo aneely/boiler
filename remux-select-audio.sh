@@ -127,6 +127,53 @@ is_subtitle_codec_mp4_compatible() {
     esac
 }
 
+# Get audio codec name from a video file
+# Arguments: file_path
+# Returns: codec name (or empty string if unavailable)
+get_audio_codec() {
+    local file_path="$1"
+    ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$file_path" 2>/dev/null | head -1 | tr -d '\n\r'
+}
+
+# Check if audio codec is compatible with MP4 container (can be copied without transcoding)
+# Arguments: codec_name
+# Returns: 0 if compatible, 1 if not compatible
+is_audio_codec_mp4_compatible() {
+    local codec="$1"
+    local codec_lower=$(echo "$codec" | tr '[:upper:]' '[:lower:]')
+
+    case "$codec_lower" in
+        wmav1|wmav2|wmalossless|wmapro|vorbis|adpcm_ms)
+            return 1  # Not compatible with MP4
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+# Determine audio codec argument for ffmpeg based on source audio compatibility
+# Returns "copy" if audio can be copied into MP4, "aac" if it must be re-encoded
+# Arguments: file_path
+# Returns: "copy" or "aac" (printed to stdout)
+get_audio_codec_arg() {
+    local file_path="$1"
+    local audio_codec
+    audio_codec=$(get_audio_codec "$file_path")
+
+    if [ -z "$audio_codec" ]; then
+        echo "copy"
+        return
+    fi
+
+    if ! is_audio_codec_mp4_compatible "$audio_codec"; then
+        warn "Audio codec '$audio_codec' is not compatible with MP4 container. Re-encoding audio to AAC."
+        echo "aac"
+    else
+        echo "copy"
+    fi
+}
+
 # Get output format and extension from input path. Echo "format_name ext" (e.g. "matroska mkv" or "mp4 mp4").
 # Same container as input preserves all subtitle codecs (e.g. SubRip in MKV); unknown defaults to matroska.
 get_output_format_from_input() {
@@ -392,7 +439,15 @@ process_one_file() {
     else
         ffmpeg_args+=(-map 0:s)
     fi
-    ffmpeg_args+=(-c copy -f "$output_format")
+    # For MP4 output, check audio codec compatibility; non-MP4 containers can copy everything
+    if [ "$output_format" = "mp4" ]; then
+        local audio_codec_arg
+        audio_codec_arg=$(get_audio_codec_arg "$input_file")
+        ffmpeg_args+=(-c:v copy -c:a "$audio_codec_arg" -c:s copy)
+    else
+        ffmpeg_args+=(-c copy)
+    fi
+    ffmpeg_args+=(-f "$output_format")
     if [ "$output_format" = "mp4" ]; then
         ffmpeg_args+=(-movflags +faststart)
         num_video=$(count_video_streams "$input_file")

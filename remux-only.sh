@@ -86,6 +86,22 @@ get_video_codec() {
     echo "$codec"
 }
 
+# Count audio streams in a video file (for explicit -map so all tracks are copied)
+# Arguments: file_path
+# Returns: number of audio streams (0 if none or on error)
+count_audio_streams() {
+    local input="$1"
+    local csv
+    csv=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$input" 2>/dev/null) || true
+    if [ -z "$csv" ]; then
+        echo "0"
+        return 0
+    fi
+    local n=0
+    for _ in $(echo "$csv" | tr ',' ' '); do n=$((n + 1)); done
+    echo "$n"
+}
+
 # Check if a video codec can be copied into MP4 container without transcoding
 is_codec_mp4_compatible() {
     local codec="$1"
@@ -100,6 +116,53 @@ is_codec_mp4_compatible() {
             return 0  # Compatible (h264, hevc, h265, mpeg4, avc1, etc.)
             ;;
     esac
+}
+
+# Get audio codec name from a video file
+# Arguments: file_path
+# Returns: codec name (or empty string if unavailable)
+get_audio_codec() {
+    local file_path="$1"
+    ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$file_path" 2>/dev/null | head -1 | tr -d '\n\r'
+}
+
+# Check if audio codec is compatible with MP4 container (can be copied without transcoding)
+# Arguments: codec_name
+# Returns: 0 if compatible, 1 if not compatible
+is_audio_codec_mp4_compatible() {
+    local codec="$1"
+    local codec_lower=$(echo "$codec" | tr '[:upper:]' '[:lower:]')
+
+    case "$codec_lower" in
+        wmav1|wmav2|wmalossless|wmapro|vorbis|adpcm_ms)
+            return 1  # Not compatible with MP4
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+# Determine audio codec argument for ffmpeg based on source audio compatibility
+# Returns "copy" if audio can be copied into MP4, "aac" if it must be re-encoded
+# Arguments: file_path
+# Returns: "copy" or "aac" (printed to stdout)
+get_audio_codec_arg() {
+    local file_path="$1"
+    local audio_codec
+    audio_codec=$(get_audio_codec "$file_path")
+
+    if [ -z "$audio_codec" ]; then
+        echo "copy"
+        return
+    fi
+
+    if ! is_audio_codec_mp4_compatible "$audio_codec"; then
+        warn "Audio codec '$audio_codec' is not compatible with MP4 container. Re-encoding audio to AAC."
+        echo "aac"
+    else
+        echo "copy"
+    fi
 }
 
 # Check if a file is a non-QuickLook compatible format
@@ -189,8 +252,15 @@ remux_to_mp4() {
         return 1
     fi
     
-    # Build ffmpeg command: copy all streams, add QuickLook compatibility flags
-    local ffmpeg_args=(-i "$input_file" -c:v copy -c:a copy -movflags +faststart)
+    # Build ffmpeg command: explicit stream mapping (first video + all audio) then copy
+    # Without -map, FFmpeg default stream selection picks only one audio track; mapping all preserves multi-track audio
+    local num_audio
+    num_audio=$(count_audio_streams "$input_file")
+    local audio_codec_arg
+    audio_codec_arg=$(get_audio_codec_arg "$input_file")
+    local ffmpeg_args=(-i "$input_file" -map 0:v:0)
+    [ "$num_audio" -gt 0 ] && ffmpeg_args+=(-map 0:a)
+    ffmpeg_args+=(-c:v copy -c:a "$audio_codec_arg" -movflags +faststart)
     
     # Add HEVC tag if video codec is HEVC/H.265 for QuickLook compatibility
     local codec_lower=$(echo "$video_codec" | tr '[:upper:]' '[:lower:]')

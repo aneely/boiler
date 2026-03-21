@@ -83,11 +83,19 @@ get_video_duration() {
 }
 
 # Mock ffprobe for codec detection
-# Returns codec from MOCK_VIDEO_CODEC if set, otherwise returns h264
+# Returns codec from MOCK_VIDEO_CODEC/MOCK_AUDIO_CODEC depending on stream selection
 ffprobe() {
-    # Check if this is a codec_name query (used by remux_to_mp4)
+    # Check if this is a codec_name query (used by remux_to_mp4, get_video_codec, get_audio_codec)
     if [[ "$*" == *"codec_name"* ]]; then
-        echo "${MOCK_VIDEO_CODEC:-h264}"
+        # Differentiate between video and audio stream queries
+        if [[ "$*" == *"select_streams a"* ]] || [[ "$*" == *"-select_streams a"* ]]; then
+            echo "${MOCK_AUDIO_CODEC:-aac}"
+        else
+            echo "${MOCK_VIDEO_CODEC:-h264}"
+        fi
+    elif [[ "$*" == *"csv=p=0"* ]] && [[ "$*" == *"select_streams a"* ]]; then
+        # count_audio_streams query - return a single index to indicate 1 audio stream
+        echo "1"
     else
         # For other ffprobe calls, return empty
         echo ""
