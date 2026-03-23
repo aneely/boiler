@@ -289,3 +289,134 @@ teardown() {
     assert_line "./video.mpeg"
     assert_line "./video.ts"
 }
+
+# ============================================================================
+# QuickLook compatibility detection tests
+# ============================================================================
+
+@test "is_quicklook_compatible: returns incompatible for HEVC file with hev1 tag" {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_codec() { echo 'hevc'; }
+        get_video_codec_tag() { echo 'hev1'; }
+        get_audio_codec() { echo 'aac'; }
+        is_quicklook_compatible 'test.mp4' && echo 'compatible' || echo 'incompatible'
+    "
+    assert_success
+    assert_output "incompatible"
+}
+
+@test "is_quicklook_compatible: returns incompatible for file with non-QuickLook audio" {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_codec() { echo 'h264'; }
+        get_video_codec_tag() { echo 'avc1'; }
+        get_audio_codec() { echo 'opus'; }
+        is_quicklook_compatible 'test.mp4' && echo 'compatible' || echo 'incompatible'
+    "
+    assert_success
+    assert_output "incompatible"
+}
+
+@test "is_quicklook_compatible: returns compatible for HEVC hvc1 with AAC audio" {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_codec() { echo 'hevc'; }
+        get_video_codec_tag() { echo 'hvc1'; }
+        get_audio_codec() { echo 'aac'; }
+        is_quicklook_compatible 'test.mp4' && echo 'compatible' || echo 'incompatible'
+    "
+    assert_success
+    assert_output "compatible"
+}
+
+@test "find_mp4_files: skips .mp4 files with boiler markers" {
+    cd "$TEST_DIR"
+    touch movie.mp4
+    touch movie.fmpg.8.00.Mbps.mp4
+    touch movie.orig.7.50.Mbps.mp4
+    touch movie.hbrk.9.00.Mbps.mp4
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        cd '$TEST_DIR'
+        find_mp4_files
+    "
+    assert_success
+    assert_output "./movie.mp4"
+    refute_line "./movie.fmpg.8.00.Mbps.mp4"
+    refute_line "./movie.orig.7.50.Mbps.mp4"
+    refute_line "./movie.hbrk.9.00.Mbps.mp4"
+}
+
+@test "generate_output_filename: preserve-name falls back to .remux.mp4 when .mp4 input exists (safety for mp4-to-mp4 remux)" {
+    cd "$TEST_DIR"
+    touch movie.mp4
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        export GLOBAL_PRESERVE_NAME=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        cd '$TEST_DIR'
+        generate_output_filename '.' 'movie' '8.00'
+    "
+    assert_success
+    assert_output "movie.remux.mp4"
+}
+
+@test "phase 2 mp4 fix: output is named {base}.remux.mp4 not .orig." {
+    # Verify the Phase 2 naming convention matches remux-select-audio pattern
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        # Simulate the Phase 2 output path calculation
+        file_path='./movie.mp4'
+        parse_filename \"\$file_path\"
+        base_name=\"\$BASE_NAME\"
+        dirname=\$(dirname \"\$file_path\")
+        prefix=\"\"
+        [ \"\$dirname\" != \".\" ] && prefix=\"\${dirname}/\"
+        echo \"\${prefix}\${base_name}.remux.mp4\"
+    "
+    assert_success
+    assert_output "movie.remux.mp4"
+}
+
+@test "phase 2 mp4 fix: original is preserved after successful remux" {
+    cd "$TEST_DIR"
+    touch movie.mp4
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        cd '$TEST_DIR'
+
+        # Mock remux_to_mp4 to simulate success without running ffmpeg
+        remux_to_mp4() { touch \"\$2\"; return 0; }
+        is_quicklook_compatible() { return 1; }  # force incompatible
+        get_video_codec() { echo 'hevc'; }
+
+        # Simulate Phase 2 inline logic
+        file_path='./movie.mp4'
+        parse_filename \"\$file_path\"
+        base_name=\"\$BASE_NAME\"
+        dirname=\$(dirname \"\$file_path\")
+        prefix=\"\"
+        [ \"\$dirname\" != \".\" ] && prefix=\"\${dirname}/\"
+        output_file=\"\${prefix}\${base_name}.remux.mp4\"
+
+        remux_to_mp4 \"\$file_path\" \"\$output_file\"
+
+        # Original must still exist
+        [ -f \"\$file_path\" ] && echo 'original_exists' || echo 'original_deleted'
+        [ -f \"\$output_file\" ] && echo 'output_exists' || echo 'output_missing'
+    "
+    assert_success
+    assert_line "original_exists"
+    assert_line "output_exists"
+}

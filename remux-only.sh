@@ -3,6 +3,8 @@
 # Standalone script to remux video files to MP4 for QuickLook compatibility
 # Only remuxes (no transcoding) - converts container format
 # Processes non-QuickLook compatible formats: mkv, wmv, avi, webm, flv, mpg, mpeg, ts
+# Also checks existing .mp4 files and re-muxes any that are not QuickLook-compatible
+# (wrong HEVC tag or QuickLook-unfriendly audio codec)
 # Supports configurable subdirectory depth traversal (default: 2 levels deep)
 
 set -e
@@ -150,6 +152,59 @@ is_audio_codec_mp4_compatible() {
     esac
 }
 
+# Check if audio codec is known to play in macOS QuickLook
+# Stricter than is_audio_codec_mp4_compatible() — some MP4-muxable codecs
+# (e.g. AC3, EAC3, Opus, FLAC) may mux successfully but produce silent audio in QuickLook.
+# Uses a whitelist of confirmed-compatible codecs; anything unknown is treated as incompatible.
+# Arguments: codec_name
+# Returns: 0 if QuickLook-compatible, 1 if not
+is_audio_codec_quicklook_compatible() {
+    local codec="$1"
+    local codec_lower=$(echo "$codec" | tr '[:upper:]' '[:lower:]')
+
+    case "$codec_lower" in
+        aac|mp3|mp3float|alac)
+            return 0  # Confirmed QuickLook-compatible
+            ;;
+        *)
+            return 1  # Not confirmed; re-encode to AAC for safety
+            ;;
+    esac
+}
+
+# Check if an MP4 file is QuickLook-compatible
+# Checks: (1) HEVC files must have hvc1 tag, (2) audio codec must be QuickLook-playable
+# Arguments: file_path
+# Returns: 0 if compatible, 1 if not compatible or on error
+is_quicklook_compatible() {
+    local file_path="$1"
+
+    local video_codec
+    video_codec=$(get_video_codec "$file_path" 2>/dev/null) || return 1
+    local codec_lower=$(echo "$video_codec" | tr '[:upper:]' '[:lower:]')
+
+    # Check HEVC tag — hvc1 required for QuickLook; hev1 causes playback failures
+    if [ "$codec_lower" = "hevc" ] || [ "$codec_lower" = "h265" ]; then
+        local codec_tag
+        codec_tag=$(get_video_codec_tag "$file_path")
+        local tag_lower=$(echo "$codec_tag" | tr '[:upper:]' '[:lower:]')
+        if [ "$tag_lower" != "hvc1" ]; then
+            return 1
+        fi
+    fi
+
+    # Check audio codec
+    local audio_codec
+    audio_codec=$(get_audio_codec "$file_path")
+    if [ -n "$audio_codec" ]; then
+        if ! is_audio_codec_quicklook_compatible "$audio_codec"; then
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
 # Determine audio codec argument for ffmpeg based on source audio compatibility
 # Returns "copy" if audio can be copied into MP4, "aac" if it must be re-encoded
 # Arguments: file_path
@@ -170,6 +225,14 @@ get_audio_codec_arg() {
     else
         echo "copy"
     fi
+}
+
+# Get video codec tag string from a video file (e.g. hvc1, hev1, avc1)
+# Arguments: file_path
+# Returns: codec tag string (or empty if unavailable)
+get_video_codec_tag() {
+    local file_path="$1"
+    ffprobe -v error -select_streams v:0 -show_entries stream=codec_tag_string -of default=noprint_wrappers=1:nokey=1 "$file_path" 2>/dev/null | head -1 | tr -d '\n\r'
 }
 
 # Check if a file is a non-QuickLook compatible format
@@ -319,13 +382,19 @@ OPTIONS:
     -h, --help                   Show this help message and exit
 
 If FILE arguments are provided, processes only those files.
-Otherwise, processes all non-QuickLook compatible video files in the current directory
-and subdirectories (default: one level deep, configurable via -L/--max-depth).
+Otherwise, processes all non-QuickLook compatible video files and all .mp4 files
+in the current directory and subdirectories (default: one level deep, configurable
+via -L/--max-depth).
 
-Supported formats: mkv, wmv, avi, webm, flv, mpg, mpeg, ts (only if codec is MP4-compatible)
+Non-QuickLook formats remuxed: mkv, wmv, avi, webm, flv, mpg, mpeg, ts
+  (only if codec is MP4-compatible)
+.mp4 files checked and re-muxed if not QuickLook-compatible:
+  - HEVC files missing the hvc1 tag
+  - Audio codec not playable in QuickLook (anything other than AAC, MP3, ALAC)
+  - .mp4 files with boiler markers (.fmpg., .orig., .hbrk.) are skipped
 
 EXAMPLES:
-    # Process all compatible files in current directory (2 levels deep)
+    # Process all files in current directory (2 levels deep)
     $0
 
     # Process only current directory (no subdirectories)
@@ -341,7 +410,7 @@ EXAMPLES:
     $0 --preserve-name
 
     # Process specific files
-    $0 video1.mkv video2.avi
+    $0 video1.mkv video2.avi movie.mp4
 
 The script will:
 1. Check codec compatibility (skips incompatible codecs like WMV3)
@@ -428,6 +497,42 @@ find_remux_files() {
     fi
 }
 
+# Find .mp4 files without boiler markers for QuickLook compatibility checking
+# Uses GLOBAL_MAX_DEPTH to control directory traversal depth
+# Prints found file paths, one per line (sorted)
+find_mp4_files() {
+    local max_depth="${GLOBAL_MAX_DEPTH:-2}"
+    local all_files=()
+
+    if [ "$max_depth" -eq 0 ]; then
+        while IFS= read -r found; do
+            if [ -n "$found" ] && [ -f "$found" ]; then
+                all_files+=("$found")
+            fi
+        done < <(find . -type f -iname "*.mp4" 2>/dev/null)
+    else
+        while IFS= read -r found; do
+            if [ -n "$found" ] && [ -f "$found" ]; then
+                all_files+=("$found")
+            fi
+        done < <(find . -maxdepth "${max_depth}" -type f -iname "*.mp4" 2>/dev/null)
+    fi
+
+    # Filter out files with boiler markers
+    local filtered=()
+    for f in "${all_files[@]}"; do
+        local bn
+        bn=$(basename "$f")
+        if [[ "$bn" != *.fmpg.* ]] && [[ "$bn" != *.orig.* ]] && [[ "$bn" != *.hbrk.* ]]; then
+            filtered+=("$f")
+        fi
+    done
+
+    if [ ${#filtered[@]} -gt 0 ]; then
+        printf '%s\n' "${filtered[@]}" | sort
+    fi
+}
+
 # Generate output filename based on preserve-name mode
 # Arguments: dirname, base_name, source_bitrate_mbps
 # Prints the output filename to stdout
@@ -449,6 +554,56 @@ generate_output_filename() {
     fi
 }
 
+# Process a single file: measure bitrate, generate output path, remux, remove original.
+# Used by both the non-QuickLook and .mp4 processing loops.
+# Directly modifies processed_count, skipped_count, failed_count from the calling scope
+# (bash dynamic scoping — must be called from main(), not a subshell).
+# Arguments: file_path
+process_one_file() {
+    local file_path="$1"
+    local basename=$(basename "$file_path")
+    local dirname=$(dirname "$file_path")
+
+    local video_duration
+    if ! video_duration=$(get_video_duration "$file_path" 2>/dev/null); then
+        error "  Could not determine duration, skipping"
+        skipped_count=$((skipped_count + 1))
+        return
+    fi
+
+    local source_bitrate_bps
+    if ! source_bitrate_bps=$(measure_bitrate "$file_path" "$video_duration"); then
+        error "  Could not determine bitrate, skipping"
+        skipped_count=$((skipped_count + 1))
+        return
+    fi
+
+    local source_bitrate_mbps=$(bps_to_mbps "$source_bitrate_bps")
+
+    parse_filename "$file_path"
+    local base_name="$BASE_NAME"
+    local output_file
+    output_file=$(generate_output_filename "$dirname" "$base_name" "$source_bitrate_mbps")
+
+    if [ -f "$output_file" ]; then
+        warn "  Output file already exists: $output_file, skipping"
+        skipped_count=$((skipped_count + 1))
+        return
+    fi
+
+    info "  Remuxing to: $(basename "$output_file")"
+    if remux_to_mp4 "$file_path" "$output_file"; then
+        rm -f "$file_path"
+        info "  ✓ Successfully remuxed and removed original"
+        processed_count=$((processed_count + 1))
+    else
+        error "  ✗ Remux failed, original file preserved"
+        rm -f "$output_file"
+        failed_count=$((failed_count + 1))
+    fi
+    echo ""
+}
+
 # Main function
 main() {
     # Check requirements
@@ -457,107 +612,117 @@ main() {
     # Parse arguments
     parse_arguments "$@"
 
-    local files_to_process=()
+    local remux_files=()
+    local mp4_files=()
 
-    # If files were specified, use those; otherwise find files
+    # If files were specified, route each to the appropriate list
     if [ ${#SPECIFIED_FILES[@]} -gt 0 ]; then
-        # Process specified files
         for file in "${SPECIFIED_FILES[@]}"; do
             if [ -f "$file" ]; then
+                local ext=$(echo "${file##*.}" | tr '[:upper:]' '[:lower:]')
                 if is_non_quicklook_format "$file"; then
-                    files_to_process+=("$file")
+                    remux_files+=("$file")
+                elif [ "$ext" = "mp4" ]; then
+                    mp4_files+=("$file")
                 else
-                    warn "Skipping $file: Not a non-QuickLook format (mkv, wmv, avi, webm, flv, mpg, mpeg, ts)"
+                    warn "Skipping $file: Not a supported format"
                 fi
             else
                 warn "File not found: $file"
             fi
         done
     else
-        # Find all non-QuickLook format files
         while IFS= read -r found; do
-            files_to_process+=("$found")
+            remux_files+=("$found")
         done < <(find_remux_files)
+        while IFS= read -r found; do
+            mp4_files+=("$found")
+        done < <(find_mp4_files)
     fi
-    
-    if [ ${#files_to_process[@]} -eq 0 ]; then
+
+    local total=$(( ${#remux_files[@]} + ${#mp4_files[@]} ))
+    if [ "$total" -eq 0 ]; then
         info "No files to process"
         exit 0
     fi
-    
-    info "Found ${#files_to_process[@]} file(s) to remux..."
-    echo ""
-    
+
     local processed_count=0
     local skipped_count=0
     local failed_count=0
-    
-    # Process each file
-    for file_path in "${files_to_process[@]}"; do
-        local basename=$(basename "$file_path")
-        local dirname=$(dirname "$file_path")
-        
-        info "Processing: $basename"
-        
-        # Check codec compatibility first
-        local video_codec
-        if ! video_codec=$(get_video_codec "$file_path" 2>/dev/null); then
-            error "  Could not detect codec, skipping"
-            skipped_count=$((skipped_count + 1))
-            continue
-        fi
-        
-        if ! is_codec_mp4_compatible "$video_codec"; then
-            warn "  Codec '$video_codec' is not MP4-compatible, skipping (would require transcoding)"
-            skipped_count=$((skipped_count + 1))
-            continue
-        fi
-        
-        # Get video duration and bitrate
-        local video_duration
-        if ! video_duration=$(get_video_duration "$file_path" 2>/dev/null); then
-            error "  Could not determine duration, skipping"
-            skipped_count=$((skipped_count + 1))
-            continue
-        fi
-        
-        local source_bitrate_bps
-        if ! source_bitrate_bps=$(measure_bitrate "$file_path" "$video_duration"); then
-            error "  Could not determine bitrate, skipping"
-            skipped_count=$((skipped_count + 1))
-            continue
-        fi
-        
-        local source_bitrate_mbps=$(bps_to_mbps "$source_bitrate_bps")
-        
-        # Parse filename and generate output path
-        parse_filename "$file_path"
-        local base_name="$BASE_NAME"
-        local output_file
-        output_file=$(generate_output_filename "$dirname" "$base_name" "$source_bitrate_mbps")
-        
-        # Check if output file already exists
-        if [ -f "$output_file" ]; then
-            warn "  Output file already exists: $output_file, skipping"
-            skipped_count=$((skipped_count + 1))
-            continue
-        fi
-        
-        # Remux to MP4
-        info "  Remuxing to: $(basename "$output_file")"
-        if remux_to_mp4 "$file_path" "$output_file"; then
-            # Remove original file only if remux succeeded
-            rm -f "$file_path"
-            info "  ✓ Successfully remuxed and removed original"
-            processed_count=$((processed_count + 1))
-        else
-            error "  ✗ Remux failed, original file preserved"
-            rm -f "$output_file"  # Clean up partial output
-            failed_count=$((failed_count + 1))
-        fi
+
+    # Phase 1: remux non-QuickLook formats to MP4
+    if [ ${#remux_files[@]} -gt 0 ]; then
+        info "Found ${#remux_files[@]} non-QuickLook file(s) to remux..."
         echo ""
-    done
-    
+
+        for file_path in "${remux_files[@]}"; do
+            local basename=$(basename "$file_path")
+            info "Processing: $basename"
+
+            local video_codec
+            if ! video_codec=$(get_video_codec "$file_path" 2>/dev/null); then
+                error "  Could not detect codec, skipping"
+                skipped_count=$((skipped_count + 1))
+                continue
+            fi
+
+            if ! is_codec_mp4_compatible "$video_codec"; then
+                warn "  Codec '$video_codec' is not MP4-compatible, skipping (would require transcoding)"
+                skipped_count=$((skipped_count + 1))
+                continue
+            fi
+
+            process_one_file "$file_path"
+        done
+    fi
+
+    # Phase 2: check .mp4 files for QuickLook compatibility; re-mux if needed
+    if [ ${#mp4_files[@]} -gt 0 ]; then
+        info "Found ${#mp4_files[@]} .mp4 file(s) to check for QuickLook compatibility..."
+        echo ""
+
+        for file_path in "${mp4_files[@]}"; do
+            local basename=$(basename "$file_path")
+            info "Checking: $basename"
+
+            if is_quicklook_compatible "$file_path"; then
+                info "  Already QuickLook-compatible, skipping"
+                skipped_count=$((skipped_count + 1))
+                echo ""
+                continue
+            fi
+
+            info "  Not QuickLook-compatible, remuxing..."
+
+            # Phase 2 follows the remux-select-audio pattern: output {base}.remux.mp4,
+            # original is never deleted — user verifies and cleans up manually.
+            parse_filename "$file_path"
+            local base_name="$BASE_NAME"
+            local dirname=$(dirname "$file_path")
+            local prefix=""
+            [ "$dirname" != "." ] && prefix="${dirname}/"
+            local output_file="${prefix}${base_name}.remux.mp4"
+
+            if [ -f "$output_file" ]; then
+                warn "  Output file already exists: $output_file, skipping"
+                skipped_count=$((skipped_count + 1))
+                echo ""
+                continue
+            fi
+
+            info "  Remuxing to: $(basename "$output_file")"
+            if remux_to_mp4 "$file_path" "$output_file"; then
+                info "  ✓ Remuxed to $(basename "$output_file") (original preserved)"
+                processed_count=$((processed_count + 1))
+            else
+                error "  ✗ Remux failed, original file preserved"
+                rm -f "$output_file"
+                failed_count=$((failed_count + 1))
+            fi
+            echo ""
+        done
+    fi
+
     # Summary
     echo ""
     info "Summary:"
