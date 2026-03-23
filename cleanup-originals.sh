@@ -83,7 +83,18 @@ EXAMPLES:
     $0 -L 0
 
 The script scans for video files that don't have transcoding markers
-(.fmpg., .orig., or .hbrk.) and moves them to trash after confirmation.
+(.fmpg., .orig., or .hbrk.) and identifies which ones have a processed
+counterpart in the same directory. Only files WITH a counterpart are
+offered for trashing. Files without a counterpart are reported but left
+alone.
+
+A "processed counterpart" is any file in the same directory whose name
+matches one of these patterns (where BASE is the original's name without
+its extension):
+  BASE.fmpg.*.mp4   — transcoded by boiler.sh
+  BASE.orig.*.mp4   — remuxed or within-tolerance by boiler.sh
+  BASE.hbrk.*.mp4   — hardbreak variant
+  BASE.remux.*      — QuickLook-fixed or audio-selected remux
 EOF
 }
 
@@ -139,6 +150,38 @@ has_transcoding_marker() {
     return 1  # No marker (is original file)
 }
 
+# Check if an original file has a processed counterpart in the same directory.
+# A counterpart is any file whose name starts with {base}. and contains a boiler
+# marker (.fmpg., .orig., .hbrk.) as an .mp4, OR starts with {base}.remux. with
+# any extension.
+# Arguments: original_file_path
+# Returns: 0 (true) if counterpart exists, 1 (false) if not
+has_processed_counterpart() {
+    local original_file="$1"
+    local basename
+    basename=$(basename "$original_file")
+    local dir
+    dir=$(dirname "$original_file")
+    local base_part="${basename%.*}"
+
+    # Boiler-marker counterparts always output .mp4
+    local markers=("fmpg" "orig" "hbrk")
+    for marker in "${markers[@]}"; do
+        local found
+        found=$(find "$dir" -maxdepth 1 -type f \
+            -iname "${base_part}.${marker}.*.mp4" 2>/dev/null | head -1)
+        [ -n "$found" ] && return 0
+    done
+
+    # .remux. counterparts (remux-only.sh Phase 2, remux-select-audio.sh) — any extension
+    local found_remux
+    found_remux=$(find "$dir" -maxdepth 1 -type f \
+        -iname "${base_part}.remux.*" 2>/dev/null | head -1)
+    [ -n "$found_remux" ] && return 0
+
+    return 1
+}
+
 # Move file to macOS trash
 # Uses native `trash` command on macOS 15+ (Sequoia), falls back to AppleScript on older versions
 move_to_trash() {
@@ -155,144 +198,174 @@ move_to_trash() {
     fi
 }
 
-# Parse command-line arguments
-parse_arguments "$@"
+# Main function
+main() {
+    # Parse command-line arguments
+    parse_arguments "$@"
 
-# Video file extensions to process
-video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv" "mpg" "mpeg" "ts")
+    # Video file extensions to process
+    local video_extensions=("mp4" "mkv" "avi" "mov" "m4v" "webm" "flv" "wmv" "mpg" "mpeg" "ts")
 
-# Get list of directories to check (uses GLOBAL_MAX_DEPTH for configurable depth)
-directories=(".")
-max_depth="${GLOBAL_MAX_DEPTH:-2}"
+    # Get list of directories to check (uses GLOBAL_MAX_DEPTH for configurable depth)
+    local directories=(".")
+    local max_depth="${GLOBAL_MAX_DEPTH:-2}"
 
-# Find subdirectories based on configured depth
-# If depth is 0 (unlimited), find all directories recursively
-# Otherwise, find directories up to the specified depth (maxdepth includes current dir, so we use maxdepth-1 for subdirs)
-if [ "$max_depth" -eq 0 ]; then
-    while IFS= read -r dir; do
-        if [ -n "$dir" ] && [ -d "$dir" ]; then
-            directories+=("$dir")
-        fi
-    done < <(find . -type d ! -path . 2>/dev/null)
-else
-    # For depth > 0, find all directories up to maxdepth (excluding current directory)
-    # maxdepth 2 = current dir (.) + one level of subdirectories
-    # So we find directories at depth 1 through (maxdepth-1)
-    subdir_depth=$((max_depth - 1))
-    if [ "$subdir_depth" -gt 0 ]; then
+    # Find subdirectories based on configured depth
+    # If depth is 0 (unlimited), find all directories recursively
+    # Otherwise, find directories up to the specified depth (maxdepth includes current dir, so we use maxdepth-1 for subdirs)
+    if [ "$max_depth" -eq 0 ]; then
         while IFS= read -r dir; do
             if [ -n "$dir" ] && [ -d "$dir" ]; then
                 directories+=("$dir")
             fi
-        done < <(find . -mindepth 1 -maxdepth "$subdir_depth" -type d 2>/dev/null)
+        done < <(find . -type d ! -path . 2>/dev/null)
+    else
+        # For depth > 0, find all directories up to maxdepth (excluding current directory)
+        # maxdepth 2 = current dir (.) + one level of subdirectories
+        # So we find directories at depth 1 through (maxdepth-1)
+        local subdir_depth=$((max_depth - 1))
+        if [ "$subdir_depth" -gt 0 ]; then
+            while IFS= read -r dir; do
+                if [ -n "$dir" ] && [ -d "$dir" ]; then
+                    directories+=("$dir")
+                fi
+            done < <(find . -mindepth 1 -maxdepth "$subdir_depth" -type d 2>/dev/null)
+        fi
     fi
-fi
 
-# Find all video files in current directory and subdirectories (one level deep)
-original_files=()
-directories_checked=0
-directories_with_originals=0
-directories_skipped=0
+    local files_with_counterpart=()
+    local files_without_counterpart=()
+    local directories_checked=0
+    local directories_with_originals=0
+    local directories_skipped=0
 
-info "Scanning directories for original video files..."
-echo ""
+    info "Scanning directories for original video files..."
+    echo ""
 
-# Process each directory
-for dir in "${directories[@]}"; do
-    directories_checked=$((directories_checked + 1))
-    local_original_files=()
-    local_transcoded_files=0
-    
-    # Find video files in this directory
-    for ext in "${video_extensions[@]}"; do
-        while IFS= read -r found; do
-            if [ -n "$found" ] && [ -f "$found" ]; then
-                if has_transcoding_marker "$found"; then
-                    local_transcoded_files=$((local_transcoded_files + 1))
+    # Process each directory
+    local dir
+    for dir in "${directories[@]}"; do
+        directories_checked=$((directories_checked + 1))
+        local local_original_files=()
+        local local_transcoded_files=0
+
+        # Find video files in this directory
+        local ext
+        for ext in "${video_extensions[@]}"; do
+            while IFS= read -r found; do
+                if [ -n "$found" ] && [ -f "$found" ]; then
+                    if has_transcoding_marker "$found"; then
+                        local_transcoded_files=$((local_transcoded_files + 1))
+                    else
+                        local_original_files+=("$found")
+                    fi
+                fi
+            done < <(find "$dir" -maxdepth 1 -type f -iname "*.${ext}" 2>/dev/null)
+        done
+
+        # Show directory status
+        if [ ${#local_original_files[@]} -gt 0 ]; then
+            directories_with_originals=$((directories_with_originals + 1))
+            local dir_with=0
+            local dir_without=0
+            local file
+            for file in "${local_original_files[@]}"; do
+                if has_processed_counterpart "$file"; then
+                    files_with_counterpart+=("$file")
+                    dir_with=$((dir_with + 1))
                 else
-                    local_original_files+=("$found")
+                    files_without_counterpart+=("$file")
+                    dir_without=$((dir_without + 1))
+                fi
+            done
+            local label="$dir"
+            [ "$dir" = "." ] && label="current directory"
+            info "Checking $label: ${dir_with} with counterpart, ${dir_without} without counterpart"
+        else
+            directories_skipped=$((directories_skipped + 1))
+            if [ "$dir" = "." ]; then
+                if [ $local_transcoded_files -gt 0 ]; then
+                    info "Checking current directory: Skipped (${local_transcoded_files} transcoded file(s), no originals)"
+                else
+                    info "Checking current directory: Skipped (no video files)"
+                fi
+            else
+                if [ $local_transcoded_files -gt 0 ]; then
+                    info "Checking $dir: Skipped (${local_transcoded_files} transcoded file(s), no originals)"
+                else
+                    info "Checking $dir: Skipped (no video files)"
                 fi
             fi
-        done < <(find "$dir" -maxdepth 1 -type f -iname "*.${ext}" 2>/dev/null)
+        fi
     done
-    
-    # Show directory status
-    if [ ${#local_original_files[@]} -gt 0 ]; then
-        directories_with_originals=$((directories_with_originals + 1))
-        if [ "$dir" = "." ]; then
-            info "Checking current directory: Found ${#local_original_files[@]} original file(s)"
-        else
-            info "Checking $dir: Found ${#local_original_files[@]} original file(s)"
-        fi
-        # Add to main list
-        for file in "${local_original_files[@]}"; do
-            original_files+=("$file")
-        done
-    else
-        directories_skipped=$((directories_skipped + 1))
-        if [ "$dir" = "." ]; then
-            if [ $local_transcoded_files -gt 0 ]; then
-                info "Checking current directory: Skipped (${local_transcoded_files} transcoded file(s), no originals)"
-            else
-                info "Checking current directory: Skipped (no video files)"
-            fi
-        else
-            if [ $local_transcoded_files -gt 0 ]; then
-                info "Checking $dir: Skipped (${local_transcoded_files} transcoded file(s), no originals)"
-            else
-                info "Checking $dir: Skipped (no video files)"
-            fi
-        fi
-    fi
-done
 
-echo ""
-info "Scan complete: Checked ${directories_checked} directory/directories, found originals in ${directories_with_originals}, skipped ${directories_skipped}"
-
-# Check if any files found
-if [ ${#original_files[@]} -eq 0 ]; then
     echo ""
-    info "No original video files found (all files have transcoding markers)"
-    exit 0
-fi
+    info "Scan complete: Checked ${directories_checked} directory/directories, found originals in ${directories_with_originals}, skipped ${directories_skipped}"
 
-echo ""
-
-# Show files to be moved
-warn "Found ${#original_files[@]} original video file(s) to move to trash:"
-for file in "${original_files[@]}"; do
-    echo "  - $file"
-done
-
-# Confirm before proceeding
-echo ""
-read -p "Move these files to trash? (y/N): " -n 1 -r
-echo ""
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    info "Cancelled."
-    exit 0
-fi
-
-# Move files to trash
-moved_count=0
-failed_count=0
-
-for file in "${original_files[@]}"; do
-    if move_to_trash "$file"; then
-        info "Moved to trash: $file"
-        moved_count=$((moved_count + 1))
-    else
-        error "Failed to move to trash: $file"
-        failed_count=$((failed_count + 1))
+    # Report files without counterparts — left alone
+    if [ ${#files_without_counterpart[@]} -gt 0 ]; then
+        echo ""
+        warn "${#files_without_counterpart[@]} original file(s) have no processed counterpart and will NOT be trashed:"
+        for file in "${files_without_counterpart[@]}"; do
+            echo "  - $file"
+        done
     fi
-done
 
-# Summary
-echo ""
-if [ $failed_count -eq 0 ]; then
-    info "Cleanup complete! Moved ${moved_count} file(s) to trash."
-else
-    warn "Cleanup complete with errors. Moved ${moved_count} file(s) to trash, ${failed_count} failed."
-    exit 1
+    # Check if anything is eligible for trashing
+    if [ ${#files_with_counterpart[@]} -eq 0 ]; then
+        echo ""
+        info "No original files with a processed counterpart found. Nothing to trash."
+        return 0
+    fi
+
+    echo ""
+
+    # Show files to be moved
+    warn "Found ${#files_with_counterpart[@]} original file(s) with a processed counterpart to move to trash:"
+    for file in "${files_with_counterpart[@]}"; do
+        echo "  - $file"
+    done
+
+    # Confirm before proceeding
+    echo ""
+    read -p "Move these files to trash? (y/N): " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        info "Cancelled."
+        return 0
+    fi
+
+    # Move files to trash
+    local moved_count=0
+    local failed_count=0
+
+    for file in "${files_with_counterpart[@]}"; do
+        if move_to_trash "$file"; then
+            info "Moved to trash: $file"
+            moved_count=$((moved_count + 1))
+        else
+            error "Failed to move to trash: $file"
+            failed_count=$((failed_count + 1))
+        fi
+    done
+
+    # Summary
+    echo ""
+    local skipped_count=${#files_without_counterpart[@]}
+    if [ $failed_count -eq 0 ]; then
+        if [ $skipped_count -gt 0 ]; then
+            info "Cleanup complete! Moved ${moved_count} file(s) to trash. ${skipped_count} file(s) skipped (no counterpart)."
+        else
+            info "Cleanup complete! Moved ${moved_count} file(s) to trash."
+        fi
+    else
+        warn "Cleanup complete with errors. Moved ${moved_count} file(s) to trash, ${failed_count} failed. ${skipped_count} skipped (no counterpart)."
+        exit 1
+    fi
+}
+
+# Run main function (unless in test mode)
+if [ -z "${CLEANUP_TEST_MODE:-}" ]; then
+    main "$@"
 fi
 
