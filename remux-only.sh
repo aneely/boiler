@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Standalone script to remux video files to MP4 with .orig.{bitrate}.Mbps naming
-# Only remuxes (no transcoding) - converts container format for QuickLook compatibility
-# Processes non-QuickLook compatible formats: mkv, wmv, avi, webm, flv
+# Standalone script to remux video files to MP4 for QuickLook compatibility
+# Only remuxes (no transcoding) - converts container format
+# Processes non-QuickLook compatible formats: mkv, wmv, avi, webm, flv, mpg, mpeg, ts
 # Supports configurable subdirectory depth traversal (default: 2 levels deep)
 
 set -e
@@ -11,6 +11,13 @@ set -e
 # Set to 0 for unlimited depth (full recursive search)
 # Only set default if not already set (allows environment variable override for testing)
 GLOBAL_MAX_DEPTH="${GLOBAL_MAX_DEPTH:-2}"
+
+# Global flag for preserve-name mode (default: 0 = use .orig.{bitrate}.Mbps naming)
+# When set to 1, output keeps original base name with .mp4 extension (no boiler markers)
+GLOBAL_PRESERVE_NAME="${GLOBAL_PRESERVE_NAME:-0}"
+
+# Global array for specified files from command-line arguments
+SPECIFIED_FILES=()
 
 # Colors for output
 RED='\033[0;31m'
@@ -296,7 +303,7 @@ show_usage() {
     cat >&2 <<EOF
 Usage: $0 [OPTIONS] [FILE...]
 
-Remux video files to MP4 with .orig.{bitrate}.Mbps naming (no transcoding).
+Remux video files to MP4 for QuickLook compatibility (no transcoding).
 
 OPTIONS:
     -L, --max-depth DEPTH        Maximum directory depth to traverse
@@ -305,13 +312,17 @@ OPTIONS:
                                  Use 0 for unlimited depth (full recursive search)
                                  Only applies when FILE arguments are not provided
 
+    -p, --preserve-name          Keep original filename (output: {base}.mp4)
+                                 Without this flag: output is {base}.orig.{bitrate}.Mbps.mp4
+                                 If {base}.mp4 already exists, falls back to {base}.remux.mp4
+
     -h, --help                   Show this help message and exit
 
 If FILE arguments are provided, processes only those files.
 Otherwise, processes all non-QuickLook compatible video files in the current directory
 and subdirectories (default: one level deep, configurable via -L/--max-depth).
 
-Supported formats: mkv, wmv, avi, webm, flv (only if codec is MP4-compatible)
+Supported formats: mkv, wmv, avi, webm, flv, mpg, mpeg, ts (only if codec is MP4-compatible)
 
 EXAMPLES:
     # Process all compatible files in current directory (2 levels deep)
@@ -326,6 +337,9 @@ EXAMPLES:
     # Process all subdirectories recursively (unlimited depth)
     $0 -L 0
 
+    # Remux without boiler naming (keeps original name, just changes extension)
+    $0 --preserve-name
+
     # Process specific files
     $0 video1.mkv video2.avi
 
@@ -333,17 +347,16 @@ The script will:
 1. Check codec compatibility (skips incompatible codecs like WMV3)
 2. Measure source bitrate
 3. Remux to MP4 with QuickLook compatibility
-4. Rename to: {base}.orig.{bitrate}.Mbps.mp4
+4. Rename to: {base}.orig.{bitrate}.Mbps.mp4 (or {base}.mp4 with --preserve-name)
 5. Remove original file (only if remux succeeds)
 EOF
 }
 
 # Parse command-line arguments
-# Sets global variable GLOBAL_MAX_DEPTH if -L or --max-depth is provided
-# Returns: list of file arguments (one per line)
+# Sets global variables GLOBAL_MAX_DEPTH, GLOBAL_PRESERVE_NAME, and SPECIFIED_FILES
 parse_arguments() {
-    local files=()
-    
+    SPECIFIED_FILES=()
+
     while [ $# -gt 0 ]; do
         case "$1" in
             -L|--max-depth)
@@ -354,15 +367,19 @@ parse_arguments() {
                     exit 1
                 fi
                 local depth_value="$2"
-                
+
                 if ! validate_depth "$depth_value"; then
                     error "Error: Invalid depth value '$depth_value'"
                     error "Depth must be a non-negative integer (0 for unlimited, or positive integer)"
                     exit 1
                 fi
-                
+
                 GLOBAL_MAX_DEPTH=$(sanitize_value "$depth_value")
                 shift 2
+                ;;
+            -p|--preserve-name)
+                GLOBAL_PRESERVE_NAME=1
+                shift
                 ;;
             -h|--help)
                 show_usage
@@ -374,62 +391,93 @@ parse_arguments() {
                 exit 1
                 ;;
             *)
-                files+=("$1")
+                SPECIFIED_FILES+=("$1")
+                shift
                 ;;
         esac
     done
-    
-    # Return files array (will be captured by caller)
-    printf '%s\n' "${files[@]}"
+}
+
+# Find all non-QuickLook format files for remuxing
+# Uses GLOBAL_MAX_DEPTH to control directory traversal depth
+# Prints found file paths, one per line (sorted)
+find_remux_files() {
+    local non_quicklook_extensions=("mkv" "wmv" "avi" "webm" "flv" "mpg" "mpeg" "ts")
+    local max_depth="${GLOBAL_MAX_DEPTH:-2}"
+    local all_files=()
+
+    for ext in "${non_quicklook_extensions[@]}"; do
+        if [ "$max_depth" -eq 0 ]; then
+            while IFS= read -r found; do
+                if [ -n "$found" ] && [ -f "$found" ]; then
+                    all_files+=("$found")
+                fi
+            done < <(find . -type f -iname "*.${ext}" 2>/dev/null)
+        else
+            while IFS= read -r found; do
+                if [ -n "$found" ] && [ -f "$found" ]; then
+                    all_files+=("$found")
+                fi
+            done < <(find . -maxdepth "${max_depth}" -type f -iname "*.${ext}" 2>/dev/null)
+        fi
+    done
+
+    # Print sorted results
+    if [ ${#all_files[@]} -gt 0 ]; then
+        printf '%s\n' "${all_files[@]}" | sort
+    fi
+}
+
+# Generate output filename based on preserve-name mode
+# Arguments: dirname, base_name, source_bitrate_mbps
+# Prints the output filename to stdout
+generate_output_filename() {
+    local dirname="$1"
+    local base_name="$2"
+    local source_bitrate_mbps="$3"
+    local prefix=""
+    [ "$dirname" != "." ] && prefix="${dirname}/"
+
+    if [ "$GLOBAL_PRESERVE_NAME" -eq 1 ]; then
+        local output_file="${prefix}${base_name}.mp4"
+        if [ -f "$output_file" ]; then
+            output_file="${prefix}${base_name}.remux.mp4"
+        fi
+        echo "$output_file"
+    else
+        echo "${prefix}${base_name}.orig.${source_bitrate_mbps}.Mbps.mp4"
+    fi
 }
 
 # Main function
 main() {
     # Check requirements
     check_requirements
-    
+
     # Parse arguments
-    local specified_files
-    specified_files=$(parse_arguments "$@")
-    
-    # Non-QuickLook format extensions
-    local non_quicklook_extensions=("mkv" "wmv" "avi" "webm" "flv" "mpg" "mpeg" "ts")
+    parse_arguments "$@"
+
     local files_to_process=()
-    
+
     # If files were specified, use those; otherwise find files
-    if [ -n "$specified_files" ]; then
+    if [ ${#SPECIFIED_FILES[@]} -gt 0 ]; then
         # Process specified files
-        while IFS= read -r file; do
-            if [ -n "$file" ] && [ -f "$file" ]; then
+        for file in "${SPECIFIED_FILES[@]}"; do
+            if [ -f "$file" ]; then
                 if is_non_quicklook_format "$file"; then
                     files_to_process+=("$file")
                 else
                     warn "Skipping $file: Not a non-QuickLook format (mkv, wmv, avi, webm, flv, mpg, mpeg, ts)"
                 fi
-            elif [ -n "$file" ]; then
+            else
                 warn "File not found: $file"
             fi
-        done <<< "$specified_files"
-    else
-        # Find all non-QuickLook format files in current directory and subdirectories
-        local max_depth="${GLOBAL_MAX_DEPTH:-2}"
-        
-        for ext in "${non_quicklook_extensions[@]}"; do
-            # Use -maxdepth only if depth is not 0 (unlimited)
-            if [ "$max_depth" -eq 0 ]; then
-                while IFS= read -r found; do
-                    if [ -n "$found" ] && [ -f "$found" ]; then
-                        files_to_process+=("$found")
-                    fi
-                done < <(find . -type f -iname "*.${ext}" 2>/dev/null)
-            else
-                while IFS= read -r found; do
-                    if [ -n "$found" ] && [ -f "$found" ]; then
-                        files_to_process+=("$found")
-                    fi
-                done < <(find . -maxdepth "${max_depth}" -type f -iname "*.${ext}" 2>/dev/null)
-            fi
         done
+    else
+        # Find all non-QuickLook format files
+        while IFS= read -r found; do
+            files_to_process+=("$found")
+        done < <(find_remux_files)
     fi
     
     if [ ${#files_to_process[@]} -eq 0 ]; then
@@ -482,17 +530,11 @@ main() {
         
         local source_bitrate_mbps=$(bps_to_mbps "$source_bitrate_bps")
         
-        # Parse filename
+        # Parse filename and generate output path
         parse_filename "$file_path"
         local base_name="$BASE_NAME"
-        
-        # Generate output filename: {base}.orig.{bitrate}.Mbps.mp4
         local output_file
-        if [ "$dirname" != "." ]; then
-            output_file="${dirname}/${base_name}.orig.${source_bitrate_mbps}.Mbps.mp4"
-        else
-            output_file="${base_name}.orig.${source_bitrate_mbps}.Mbps.mp4"
-        fi
+        output_file=$(generate_output_filename "$dirname" "$base_name" "$source_bitrate_mbps")
         
         # Check if output file already exists
         if [ -f "$output_file" ]; then
@@ -529,5 +571,7 @@ main() {
     fi
 }
 
-# Run main function
-main "$@"
+# Run main function (unless in test mode)
+if [ -z "${REMUX_TEST_MODE:-}" ]; then
+    main "$@"
+fi

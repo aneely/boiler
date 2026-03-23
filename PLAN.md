@@ -27,7 +27,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Multi-point sampling (beginning, middle, end) for accurate bitrate prediction
 - [x] HEVC via Apple VideoToolbox (hardware-accelerated on macOS)
 - [x] MP4 container format
-- [x] Audio: All audio streams copied (no re-encoding)
+- [x] Audio: All audio streams mapped; copied when MP4-compatible, re-encoded to AAC when incompatible (e.g. wmav2, vorbis)
 - [x] Color-coded output messages
 - [x] Error handling and validation
 - [x] Early exit check: Skip transcoding if source video is already within ±5% of target bitrate
@@ -36,10 +36,14 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] Test suite (legacy + bats); see README for how to run
 - [x] Second pass transcoding: Automatically performs a second transcoding pass with adjusted quality if the first pass bitrate is outside tolerance range
 - [x] Preprocessing pass for non-QuickLook formats: Automatically remuxes non-QuickLook compatible files (mkv, wmv, avi, webm, flv) that are within tolerance or below target, including `.orig.` files, before main file discovery
-- [x] Codec compatibility checking: Checks codec compatibility before remuxing to prevent failures with incompatible codecs (e.g., WMV3)
+- [x] Codec compatibility checking: Checks video codec compatibility before remuxing to prevent failures with incompatible codecs (e.g., WMV3). Also checks audio codec compatibility — incompatible audio codecs (e.g. wmav2, vorbis) are re-encoded to AAC instead of copied, preventing zero-byte output failures
+- [x] FFmpeg error handling: `transcode_sample()`, `transcode_full_video()`, and `remux_to_mp4()` check FFmpeg exit code and verify output file exists with non-zero size, failing early instead of continuing silently with bad output
 - [x] Command-line target bitrate override: Added `--target-bitrate` (or `-t`) flag to override resolution-based target bitrate for all files
 - [x] Configurable subdirectory depth: Added `-L` and `--max-depth` command-line flags for configurable directory traversal depth (default: 2, supports unlimited with `-L 0`)
 - [x] Third pass with linear interpolation: Automatically performs a third transcoding pass using linear interpolation between first and second pass data points when second pass is still outside tolerance, addressing overcorrection issues
+- [x] remux-only.sh `--preserve-name` / `-p` flag: Remux without boiler markers — output keeps original filename with `.mp4` extension. Falls back to `{base}.remux.mp4` if `{base}.mp4` already exists. `.remux.` is not a boiler marker, so the file remains eligible for future transcoding
+- [x] remux-only.sh test coverage: 16 Bats tests in `tests/test_remux_only.bats` covering depth traversal, argument parsing, validate_depth, output path logic, and extension coverage
+- [x] remux-only.sh structural improvements: `REMUX_TEST_MODE` guard (matches boiler.sh pattern), `find_remux_files()` extracted from `main()`, `generate_output_filename()` extracted, `parse_arguments` refactored to use global array instead of stdout (fixed pre-existing subshell bug where `-L` flag had no effect)
 
 ### Implementation Notes (Known Issues)
 
@@ -57,6 +61,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 - [x] **MKV remuxing for optimized files**: For MKV files that are already within tolerance or below target bitrate, automatically remux them to MP4 with QuickLook compatibility. This converts the container format without transcoding video/audio streams, improving macOS Finder QuickLook compatibility while preserving quality. Uses `-movflags +faststart` and `-tag:v hvc1` (for HEVC) for optimal QuickLook support. (Implemented)
 - [ ] **Initial pass to identify work**: Perform an initial pass over all discovered video files to capture all potential work and allow short-circuiting logic to filter down to untranscoded files before starting any transcoding. This prevents non-deterministic behavior where a file transcoded close to the target bitrate (but slightly out of tolerance) causes a second run of the script to attempt re-encoding an already good enough encoded file. The initial pass would identify files that are already within tolerance or have encoded versions, ensuring they are properly skipped before any transcoding begins.
 - [x] **Single-pass remux and transcode**: Ensure that both the remuxing pass and transcoding pass happen in a single script execution, rather than requiring two separate runs. (Implemented.) The current design already achieves this: preprocessing only remuxes (or compatibility-transcodes) files that are within tolerance or below target; those outputs use `.orig.` naming and need no further work. Above-target non-QuickLook files are not touched in preprocessing—they are found by `find_all_video_files()` (called after preprocessing) and transcoded in the main loop in one pass. No second run is required.
+- [ ] **QuickLook fix for existing MP4 files**: Detect and fix MP4 files that aren't QuickLook-friendly. Common causes: HEVC video with `hev1` tag instead of `hvc1`, missing `faststart` moov atom, or incompatible audio codec (e.g. Opus). The `remux_to_mp4()` function already applies all three fixes (`-movflags +faststart`, `-tag:v hvc1`, audio re-encoding to AAC), so the implementation is primarily about detection. Would expand `remux-only.sh` from "remux non-MP4 containers to MP4" to also "fix existing MP4s for QuickLook." Detection feasibility: HEVC tag check and audio codec check are fast via ffprobe; faststart detection is harder (no clean ffprobe one-liner). Pragmatic approach: check HEVC tag and audio codec first, address faststart separately if needed.
 - [ ] **Revisit start-of-run output**: Revisit the output at the start of the script when it calculates the collection of work to do. Address pre-processing message ordering, the "Found X video file(s) to process" summary, and noisy repeated lines (e.g. "Target bitrate" logged once per file during pre-processing when that phase runs over many non-QuickLook files). Goal: clearer, less repetitive initial output so the user sees a coherent picture of what will be done before processing begins.
 - [ ] **Run once: remux then reencode (re-invoke)**: Simple implementation where the remux path, after finishing, calls the script itself again so one user run yields both remuxing and reencoding. Base case: when the script is run *after* a remux, it must not run the remux/preprocess step again. The recursive call passes a post-remux indicator (e.g. env var `BOILER_AFTER_REMUX=1` or flag `--after-remux`). First run: run remux/preprocess; when that pass finishes, re-exec the script with the indicator. Second run: if the indicator is set, skip remux/preprocess and only do discovery + transcode; do not set the indicator again, so no third run. Result: one user invocation → one remux pass then one encode pass.
 
@@ -151,7 +156,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 - [ ] **Subcommand interface for individual operations**: The modular architecture of `boiler.sh` decomposes naturally into individual subcommands (discover, analyze, transcode, etc.) that could be exposed via CLI, enabling granular control and scripting use cases. Based on the functional unit decomposition documented in `docs/ARCHITECTURE.md`.
   
-  **See [plans/To Do/SUBCOMMAND-INTERFACE-PLAN.md](plans/To%20Do/SUBCOMMAND-INTERFACE-PLAN.md)** for detailed implementation specifications including all 8 proposed subcommands, exit codes, global variable handling strategy, signal handling considerations, and 5-phase implementation plan.
+  **See [plans/to-do/SUBCOMMAND-INTERFACE-PLAN.md](plans/to-do/SUBCOMMAND-INTERFACE-PLAN.md)** for detailed implementation specifications including all 8 proposed subcommands, exit codes, global variable handling strategy, signal handling considerations, and 5-phase implementation plan.
 
 ### Process Control
 
@@ -185,8 +190,8 @@ Create a simplified command-line tool for video transcoding on macOS that:
 ### Development Workflow
 
 - [x] **Test suite refactoring for speed and independence**: Implemented dual test suite strategy with bats-core framework.
-  - **Legacy suite** (`test_boiler.sh`): 283 tests, ~6s, quick feedback during development
-  - **Bats suite** (`tests/*.bats`): 227 tests, ~16s parallel, thorough pre-commit verification with proper isolation
+  - **Legacy suite** (`test_boiler.sh`): ~6s, quick feedback during development
+  - **Bats suite** (`tests/*.bats`): ~16s parallel, thorough pre-commit verification with proper isolation
   - **Recommended workflow**: Run legacy for rapid iteration, bats before commits
   - **Both suites**: Use same mocking approach, work without FFmpeg/ffprobe, comprehensive coverage
 - [ ] **Account-wide Cursor configuration for "remember what you need to" convention**: Explore options for making the PROJECT-CONTEXT.md/PLAN.md/README.md update convention reusable across projects. Options to investigate:

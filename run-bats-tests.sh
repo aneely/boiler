@@ -66,6 +66,7 @@ TEST FILES:
   tests/test_quality_algorithms.bats   - Quality adjustment algorithm tests
   tests/test_mocked_functions.bats     - Mock function tests
   tests/test_integration.bats          - Integration tests (main() workflow)
+  tests/test_remux_only.bats           - remux-only.sh file discovery, depth, --preserve-name tests
 
 EOF
 }

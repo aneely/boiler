@@ -93,6 +93,7 @@ boiler/
 ├── cleanup-mp4.sh         # Helper: Remove .mp4 files
 ├── cleanup-originals.sh   # Helper: Remove .orig. files
 ├── remux-only.sh          # Helper: Remux to MP4
+├── remux-select-audio.sh  # Helper: Remux with audio track selection
 ├── .gitignore
 ├── CLAUDE.md              # AI assistant context (this workflow)
 ├── PROJECT-CONTEXT.md     # Technical context (this file)
@@ -101,6 +102,10 @@ boiler/
 ├── docs/                  # Technical documentation
 │   ├── ARCHITECTURE.md    # Structural decomposition and functional units
 │   └── TECHNICAL.md       # Algorithm and design details
+├── plans/                 # Feature plans and design docs
+│   ├── completed/
+│   ├── in-progress/
+│   └── to-do/
 ├── tests/                 # Bats test suite (~16s parallel)
 │   ├── helpers/
 │   └── *.bats
@@ -129,7 +134,9 @@ boiler/
 - `ffprobe`: Video analysis
 - `bc`: Bitrate calculations
 
-**Audio**: All audio streams are copied when transcoding and remuxing (explicit `-map 0:v:0` and `-map 0:a` in `transcode_sample()`, `transcode_full_video()`, and `remux_to_mp4()`; `count_audio_streams()` used to omit audio map when source has none).
+**Audio**: All audio streams are mapped explicitly (`-map 0:v:0` and `-map 0:a` in `transcode_sample()`, `transcode_full_video()`, and `remux_to_mp4()`; `count_audio_streams()` used to omit audio map when source has none). Audio is copied when the source codec is MP4-compatible, or re-encoded to AAC when incompatible (e.g. wmav2, vorbis). Compatibility is determined by `is_audio_codec_mp4_compatible()` and `get_audio_codec_arg()`.
+
+**FFmpeg error handling**: `transcode_sample()`, `transcode_full_video()`, and `remux_to_mp4()` check the FFmpeg exit code and verify the output file exists with non-zero size after each call, failing early with a clear error instead of continuing silently.
 
 ---
 

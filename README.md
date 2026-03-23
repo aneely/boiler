@@ -16,7 +16,7 @@ A simplified command-line tool for transcoding video files with automatic qualit
 - **Codec**: HEVC (H.265) via `hevc_videotoolbox` (Apple VideoToolbox hardware acceleration)
 - **Container**: MP4
 - **Quality control**: Constant quality mode (`-q:v`) - Iteratively adjusts quality value (0-100, higher = higher quality/bitrate) to hit target bitrate
-- **Audio**: Copy (no re-encoding)
+- **Audio**: Copy when MP4-compatible; re-encode to AAC when incompatible (e.g. wmav2, vorbis)
 - **Target Bitrates**:
   - 2160p (4K): 11 Mbps
   - 1080p (Full HD): 8 Mbps
@@ -148,7 +148,7 @@ The tool automatically detects these video file extensions:
 - **macOS-only** - Currently only supports macOS (VideoToolbox hardware acceleration requires macOS)
 - Processes video files in current directory and subdirectories (default: one level deep, configurable via `-L`/`--max-depth` flag; use `-L 0` for unlimited recursive search)
 - Uses hardcoded defaults (not yet configurable via config file, though command-line overrides are available)
-- All audio streams are copied (not re-encoded)
+- Audio streams are copied when the source codec is MP4-compatible; incompatible codecs (e.g. wmav2, vorbis) are re-encoded to AAC
 - **QuickLook and audio** – Output is made Quick Look–friendly for video (MP4, faststart, HEVC tag). All audio streams are copied, not re-encoded. If the source uses an audio codec that Finder Quick Look doesn’t support in MP4 (e.g. Opus), the file may play in other apps but not in Quick Look. For best Quick Look compatibility, use a source that already has AAC audio.
 
 ## Future Features
@@ -205,11 +205,11 @@ For testing and development, helper scripts are available:
 
 The project includes two test suites for comprehensive coverage:
 
-**Legacy Suite** (`test_boiler.sh`) - 271 tests, ~6s
+**Legacy Suite** (`test_boiler.sh`) - ~6s
 - Quick feedback during development
 - Run with: `bash test_boiler.sh`
 
-**Bats Suite** (`tests/*.bats`) - 217 tests, ~16s parallel
+**Bats Suite** (`tests/*.bats`) - ~16s parallel
 - Industry-standard bats-core framework with proper test isolation
 - Thorough pre-commit verification
 - Run with: `bats --jobs 8 tests/*.bats` (parallel, recommended)
