@@ -164,19 +164,25 @@ has_processed_counterpart() {
     dir=$(dirname "$original_file")
     local base_part="${basename%.*}"
 
+    # Escape glob metacharacters in base_part so find -iname treats them literally.
+    # Brackets in particular are common in video filenames (e.g. "[belize] footage.mp4")
+    # and would otherwise be interpreted as character classes by find's glob engine.
+    local escaped_base
+    escaped_base=$(printf '%s' "$base_part" | sed 's/[][*?]/\\&/g')
+
     # Boiler-marker counterparts always output .mp4
     local markers=("fmpg" "orig" "hbrk")
     for marker in "${markers[@]}"; do
         local found
         found=$(find "$dir" -maxdepth 1 -type f \
-            -iname "${base_part}.${marker}.*.mp4" 2>/dev/null | head -1)
+            -iname "${escaped_base}.${marker}.*.mp4" 2>/dev/null | head -1)
         [ -n "$found" ] && return 0
     done
 
     # .remux. counterparts (remux-only.sh Phase 2, remux-select-audio.sh) — any extension
     local found_remux
     found_remux=$(find "$dir" -maxdepth 1 -type f \
-        -iname "${base_part}.remux.*" 2>/dev/null | head -1)
+        -iname "${escaped_base}.remux.*" 2>/dev/null | head -1)
     [ -n "$found_remux" ] && return 0
 
     return 1
@@ -200,6 +206,10 @@ move_to_trash() {
 
 # Main function
 main() {
+    # Save stdin to fd 3 before process substitutions in the scan loops can clobber it.
+    # Used later to read the confirmation prompt from the actual terminal.
+    exec 3<&0
+
     # Parse command-line arguments
     parse_arguments "$@"
 
@@ -249,19 +259,31 @@ main() {
         local local_original_files=()
         local local_transcoded_files=0
 
-        # Find video files in this directory
+        # Find video files in this directory — single find call to avoid per-extension
+        # process substitutions that exhaust the fd table at high depths.
+        # Build: -iname "*.mp4" -o -iname "*.mkv" -o ...
+        local find_name_args=()
+        local first_ext=1
         local ext
         for ext in "${video_extensions[@]}"; do
-            while IFS= read -r found; do
-                if [ -n "$found" ] && [ -f "$found" ]; then
-                    if has_transcoding_marker "$found"; then
-                        local_transcoded_files=$((local_transcoded_files + 1))
-                    else
-                        local_original_files+=("$found")
-                    fi
-                fi
-            done < <(find "$dir" -maxdepth 1 -type f -iname "*.${ext}" 2>/dev/null)
+            if [ "$first_ext" -eq 1 ]; then
+                find_name_args+=("-iname" "*.${ext}")
+                first_ext=0
+            else
+                find_name_args+=("-o" "-iname" "*.${ext}")
+            fi
         done
+        local tmp_found
+        tmp_found=$(find "$dir" -maxdepth 1 -type f \( "${find_name_args[@]}" \) 2>/dev/null)
+        while IFS= read -r found; do
+            if [ -n "$found" ] && [ -f "$found" ]; then
+                if has_transcoding_marker "$found"; then
+                    local_transcoded_files=$((local_transcoded_files + 1))
+                else
+                    local_original_files+=("$found")
+                fi
+            fi
+        done <<< "$tmp_found"
 
         # Show directory status
         if [ ${#local_original_files[@]} -gt 0 ]; then
@@ -328,7 +350,11 @@ main() {
 
     # Confirm before proceeding
     echo ""
-    read -p "Move these files to trash? (y/N): " -n 1 -r
+    if [ -n "${CLEANUP_CONFIRM:-}" ]; then
+        REPLY="$CLEANUP_CONFIRM"
+    else
+        read -p "Move these files to trash? (y/N): " -n 1 -r <&3 || true
+    fi
     echo ""
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         info "Cancelled."
