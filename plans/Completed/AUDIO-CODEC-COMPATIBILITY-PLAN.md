@@ -96,3 +96,15 @@ Test-driven: write failing tests first, then implement code to pass them.
   - `remux-select-audio.sh`: Same functions added; updated `-c copy` to split into `-c:v copy -c:a $audio_codec_arg -c:s copy` for MP4 output.
   - `cleanup-originals.sh`: No ffmpeg/remux calls — no changes needed.
 - [x] 17. Run full test suite and verify all pass (299 legacy, 264 bats).
+
+### Phase 7: Fix WMV/ASF zero-bitrate bug
+
+Bug discovered after Phase 6: WMV/ASF containers report stream-level bitrate as 0 or 1 bps via ffprobe. This caused two problems:
+1. `measure_bitrate()` fell through to the file-size calculation too eagerly (empty/N/A check missed numeric 0 and 1).
+2. `transcode_video()` and `preprocess_non_quicklook_files()` passed the zero source bitrate as the transcode target, corrupting `TARGET_BITRATE_BPS` and causing divide-by-zero in the quality optimization loop.
+
+- [x] 18. Add `test_measure_bitrate.bats` with 4 unit tests covering: valid stream bitrate returned directly; stream=0 falls back to container bitrate; stream=1 (near-zero) falls back to container bitrate; both=0 falls back to file-size calculation.
+- [x] 19. Add 4 regression tests to `test_integration.bats` covering `transcode_video` and `preprocess_non_quicklook_files` with zero and near-zero source bitrate + incompatible codec — assert sample count ≤ 9 (no runaway loop).
+- [x] 20. Fix `measure_bitrate()`: add container-level bitrate fallback (ffprobe `format=bit_rate`) between the stream-level query and the file-size calculation. Use a 100,000 bps threshold instead of empty/N/A string checks to catch 0 and near-zero values.
+- [x] 21. Fix `transcode_video()` (two locations) and `preprocess_non_quicklook_files()`: guard the source-bitrate-as-target override with the same 100,000 bps threshold. When source bitrate is below threshold, fall through to the resolution-based target instead of corrupting it.
+- [x] 22. Run full test suite and verify all pass (308 legacy, 308 bats).

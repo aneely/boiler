@@ -454,6 +454,81 @@ teardown() {
 }
 
 # ============================================================================
+# Bug fix: incompatible codec + zero source bitrate should not corrupt target
+# ============================================================================
+
+@test "transcode_video: uses resolution-based target bitrate when source bitrate is zero and codec is incompatible" {
+    # Regression test: WMV with wmv3 video where ffprobe returns 0 for source bitrate.
+    touch "test_video.wmv"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=0          # ffprobe returns 0 — can't measure source
+    MOCK_VIDEO_CODEC="wmv3"
+    MOCK_SAMPLE_BITRATE_BPS=8000000
+    MOCK_OUTPUT_BITRATE_BPS=8000000
+
+    transcode_video "test_video.wmv" 2>&1 > /dev/null
+
+    local sample_count
+    sample_count=$(get_call_count "$TRANSCODE_SAMPLE_CALLS_FILE")
+    assert [ "$sample_count" -le 9 ]
+}
+
+@test "transcode_video: uses resolution-based target bitrate when source bitrate is near-zero and codec is incompatible" {
+    # Regression test: source bitrate is a tiny non-zero value (e.g. 1 bps) from a
+    # malformed WMV stream — rounds to 0.00 Mbps but passes a string != "0" check.
+    # Fix must use a numeric minimum threshold, not a string equality check.
+    touch "test_video.wmv"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=1          # ffprobe returns 1 bps — effectively unmeasured
+    MOCK_VIDEO_CODEC="wmv3"
+    MOCK_SAMPLE_BITRATE_BPS=8000000
+    MOCK_OUTPUT_BITRATE_BPS=8000000
+
+    transcode_video "test_video.wmv" 2>&1 > /dev/null
+
+    local sample_count
+    sample_count=$(get_call_count "$TRANSCODE_SAMPLE_CALLS_FILE")
+    assert [ "$sample_count" -le 9 ]
+}
+
+@test "preprocess_non_quicklook_files: uses resolution-based target when source bitrate is zero and codec is incompatible" {
+    touch "test_video.wmv"
+    MOCK_VIDEO_FILE="test_video.wmv"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=0
+    MOCK_VIDEO_CODEC="wmv3"
+    MOCK_SAMPLE_BITRATE_BPS=8000000
+    MOCK_OUTPUT_BITRATE_BPS=8000000
+
+    preprocess_non_quicklook_files 2>&1 > /dev/null || true
+
+    local sample_count
+    sample_count=$(get_call_count "$TRANSCODE_SAMPLE_CALLS_FILE")
+    assert [ "$sample_count" -le 9 ]
+}
+
+@test "preprocess_non_quicklook_files: uses resolution-based target when source bitrate is near-zero and codec is incompatible" {
+    # Same as above but source bitrate = 1 bps (near-zero, passes string != "0" check).
+    touch "test_video.wmv"
+    MOCK_VIDEO_FILE="test_video.wmv"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=1
+    MOCK_VIDEO_CODEC="wmv3"
+    MOCK_SAMPLE_BITRATE_BPS=8000000
+    MOCK_OUTPUT_BITRATE_BPS=8000000
+
+    preprocess_non_quicklook_files 2>&1 > /dev/null || true
+
+    local sample_count
+    sample_count=$(get_call_count "$TRANSCODE_SAMPLE_CALLS_FILE")
+    assert [ "$sample_count" -le 9 ]
+}
+
+# ============================================================================
 # preprocess_non_quicklook_files() tests
 # ============================================================================
 

@@ -2049,6 +2049,172 @@ test_preprocess_codec_incompatible
 
 echo ""
 
+# Test transcode_video() uses resolution-based target when source bitrate is zero
+echo "Testing transcode_video() with zero source bitrate and incompatible codec..."
+test_transcode_video_zero_source_bitrate_incompatible_codec() {
+    local output
+    local exit_code
+    local temp_dir
+
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || exit 1
+
+    reset_call_tracking
+    touch "test_video.wmv"
+    MOCK_VIDEO_FILE="test_video.wmv"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=0           # ffprobe returns 0 for WMV stream
+    MOCK_VIDEO_CODEC="wmv3"
+    MOCK_SAMPLE_BITRATE_BPS=8000000
+    MOCK_OUTPUT_BITRATE_BPS=8000000
+
+    set +e
+    output=$(transcode_video "test_video.wmv" 2>&1)
+    exit_code=$?
+    set -e
+
+    assert_exit_code $exit_code 0 "transcode_video: completes with zero source bitrate and incompatible codec"
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "1" "transcode_video: calls transcode_full_video for zero source bitrate + incompatible codec"
+    local sample_count
+    sample_count=$(count_calls "$TRANSCODE_SAMPLE_CALLS_FILE")
+    local in_range_zero; [ "$sample_count" -le 9 ] && in_range_zero="yes" || in_range_zero="no"
+    assert_equal "$in_range_zero" "yes" "transcode_video: sample count is <= 9 (no runaway loop) for zero source bitrate"
+
+    rm -f "test_video.wmv" *.mp4 *.orig.*.mp4 2>/dev/null
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_VIDEO_CODEC MOCK_SAMPLE_BITRATE_BPS MOCK_OUTPUT_BITRATE_BPS
+
+    cd - > /dev/null || true
+    rm -rf "$temp_dir"
+}
+test_transcode_video_zero_source_bitrate_incompatible_codec
+
+echo ""
+
+# Test transcode_video() uses resolution-based target when source bitrate is near-zero (1 bps)
+echo "Testing transcode_video() with near-zero source bitrate and incompatible codec..."
+test_transcode_video_near_zero_source_bitrate_incompatible_codec() {
+    local output
+    local exit_code
+    local temp_dir
+
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || exit 1
+
+    reset_call_tracking
+    touch "test_video.wmv"
+    MOCK_VIDEO_FILE="test_video.wmv"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=1           # ffprobe returns 1 bps — near-zero sentinel
+    MOCK_VIDEO_CODEC="wmv3"
+    MOCK_SAMPLE_BITRATE_BPS=8000000
+    MOCK_OUTPUT_BITRATE_BPS=8000000
+
+    set +e
+    output=$(transcode_video "test_video.wmv" 2>&1)
+    exit_code=$?
+    set -e
+
+    assert_exit_code $exit_code 0 "transcode_video: completes with near-zero source bitrate and incompatible codec"
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "1" "transcode_video: calls transcode_full_video for near-zero source bitrate + incompatible codec"
+    local sample_count
+    sample_count=$(count_calls "$TRANSCODE_SAMPLE_CALLS_FILE")
+    local in_range_nearzero; [ "$sample_count" -le 9 ] && in_range_nearzero="yes" || in_range_nearzero="no"
+    assert_equal "$in_range_nearzero" "yes" "transcode_video: sample count is <= 9 (no runaway loop) for near-zero source bitrate"
+
+    rm -f "test_video.wmv" *.mp4 *.orig.*.mp4 2>/dev/null
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_VIDEO_CODEC MOCK_SAMPLE_BITRATE_BPS MOCK_OUTPUT_BITRATE_BPS
+
+    cd - > /dev/null || true
+    rm -rf "$temp_dir"
+}
+test_transcode_video_near_zero_source_bitrate_incompatible_codec
+
+echo ""
+
+# Test preprocess_non_quicklook_files() uses resolution-based target when source bitrate is zero
+echo "Testing preprocess_non_quicklook_files() with zero source bitrate and incompatible codec..."
+test_preprocess_zero_source_bitrate_incompatible_codec() {
+    local output
+    local exit_code
+    local temp_dir
+
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || exit 1
+
+    reset_call_tracking
+    touch "test_video.wmv"
+    MOCK_VIDEO_FILE="test_video.wmv"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=0
+    MOCK_VIDEO_CODEC="wmv3"
+    MOCK_SAMPLE_BITRATE_BPS=8000000
+    MOCK_OUTPUT_BITRATE_BPS=8000000
+
+    set +e
+    output=$(preprocess_non_quicklook_files 2>&1)
+    exit_code=$?
+    set -e
+
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "1" "preprocess_non_quicklook_files: calls transcode_full_video for zero source bitrate + incompatible codec"
+    local sample_count
+    sample_count=$(count_calls "$TRANSCODE_SAMPLE_CALLS_FILE")
+    local in_range_pre_zero; [ "$sample_count" -le 9 ] && in_range_pre_zero="yes" || in_range_pre_zero="no"
+    assert_equal "$in_range_pre_zero" "yes" "preprocess_non_quicklook_files: sample count is <= 9 (no runaway loop) for zero source bitrate"
+
+    rm -f "test_video.wmv" *.mp4 *.orig.*.mp4 2>/dev/null
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_VIDEO_CODEC MOCK_SAMPLE_BITRATE_BPS MOCK_OUTPUT_BITRATE_BPS
+
+    cd - > /dev/null || true
+    rm -rf "$temp_dir"
+}
+test_preprocess_zero_source_bitrate_incompatible_codec
+
+echo ""
+
+# Test preprocess_non_quicklook_files() uses resolution-based target when source bitrate is near-zero (1 bps)
+echo "Testing preprocess_non_quicklook_files() with near-zero source bitrate and incompatible codec..."
+test_preprocess_near_zero_source_bitrate_incompatible_codec() {
+    local output
+    local exit_code
+    local temp_dir
+
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || exit 1
+
+    reset_call_tracking
+    touch "test_video.wmv"
+    MOCK_VIDEO_FILE="test_video.wmv"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=1
+    MOCK_VIDEO_CODEC="wmv3"
+    MOCK_SAMPLE_BITRATE_BPS=8000000
+    MOCK_OUTPUT_BITRATE_BPS=8000000
+
+    set +e
+    output=$(preprocess_non_quicklook_files 2>&1)
+    exit_code=$?
+    set -e
+
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "1" "preprocess_non_quicklook_files: calls transcode_full_video for near-zero source bitrate + incompatible codec"
+    local sample_count
+    sample_count=$(count_calls "$TRANSCODE_SAMPLE_CALLS_FILE")
+    local in_range_pre_nz; [ "$sample_count" -le 9 ] && in_range_pre_nz="yes" || in_range_pre_nz="no"
+    assert_equal "$in_range_pre_nz" "yes" "preprocess_non_quicklook_files: sample count is <= 9 (no runaway loop) for near-zero source bitrate"
+
+    rm -f "test_video.wmv" *.mp4 *.orig.*.mp4 2>/dev/null
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_VIDEO_CODEC MOCK_SAMPLE_BITRATE_BPS MOCK_OUTPUT_BITRATE_BPS
+
+    cd - > /dev/null || true
+    rm -rf "$temp_dir"
+}
+test_preprocess_near_zero_source_bitrate_incompatible_codec
+
+echo ""
+
 # Test validate_bitrate()
 test_validate_bitrate() {
     echo "Testing validate_bitrate()..."

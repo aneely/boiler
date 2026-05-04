@@ -803,17 +803,28 @@ remux_mkv_to_mp4() {
 measure_bitrate() {
     local file_path="$1"
     local duration="$2"
-    
-    # Try to get bitrate from ffprobe first
-    local bitrate_bps=$(ffprobe -v error -select_streams v:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$file_path" 2>/dev/null | head -1 | tr -d '\n\r')
-    
-    # If bitrate is not available, use file size calculation as fallback
-    if [ -z "$bitrate_bps" ] || [ "$bitrate_bps" = "N/A" ]; then
-        local file_size_bytes=$(stat -f%z "$file_path" 2>/dev/null || stat -c%s "$file_path" 2>/dev/null | tr -d '\n\r')
+
+    # Try stream-level bitrate first
+    local bitrate_bps
+    bitrate_bps=$(ffprobe -v error -select_streams v:0 -show_entries stream=bit_rate \
+        -of default=noprint_wrappers=1:nokey=1 "$file_path" 2>/dev/null | head -1 | tr -d '\n\r')
+
+    # If stream-level is unusable (< 0.1 Mbps), try container-level bitrate.
+    # WMV/ASF containers store bitrate at container level; ffprobe returns 0 or 1 bps
+    # at the stream level for these files.
+    if ! (( $(echo "$(sanitize_value "${bitrate_bps:-0}") >= 100000" | bc -l 2>/dev/null || echo 0) )); then
+        bitrate_bps=$(ffprobe -v error -show_entries format=bit_rate \
+            -of default=noprint_wrappers=1:nokey=1 "$file_path" 2>/dev/null | head -1 | tr -d '\n\r')
+    fi
+
+    # If still unusable, fall back to file size / duration
+    if ! (( $(echo "$(sanitize_value "${bitrate_bps:-0}") >= 100000" | bc -l 2>/dev/null || echo 0) )); then
+        local file_size_bytes
+        file_size_bytes=$(stat -f%z "$file_path" 2>/dev/null || stat -c%s "$file_path" 2>/dev/null | tr -d '\n\r')
         duration=$(sanitize_value "$duration")
         bitrate_bps=$(echo "scale=0; ($file_size_bytes * 8) / $duration" | bc | tr -d '\n\r')
     fi
-    
+
     if [ -n "$bitrate_bps" ] && [ "$bitrate_bps" != "N/A" ]; then
         echo "$bitrate_bps"
     else
@@ -1757,9 +1768,15 @@ preprocess_non_quicklook_files() {
                 # Use helper function to handle non-QuickLook format
                 if handle_non_quicklook_at_target "$file_path" "$source_bitrate_mbps" "needs_transcode"; then
                     if [ "$needs_transcode" -eq 1 ]; then
-                        # Codec is incompatible - transcode instead of remuxing
-                        # Transcode with source bitrate as target (preserve bitrate, improve compatibility)
-                        if transcode_video "$file_path" "$source_bitrate_mbps"; then
+                        # Codec is incompatible - transcode instead of remuxing.
+                        # Pass source bitrate as target only when it's a meaningful non-zero
+                        # value — a zero source bitrate (ffprobe returning 0 for stream
+                        # metadata) would set TARGET_BITRATE_BPS=0 and cause divide-by-zero.
+                        local transcode_target_override=""
+                        if (( $(echo "$(sanitize_value "${source_bitrate_bps:-0}") >= 100000" | bc -l 2>/dev/null || echo 0) )); then
+                            transcode_target_override="$source_bitrate_mbps"
+                        fi
+                        if transcode_video "$file_path" "$transcode_target_override"; then
                             # Remove original file only if transcoding succeeded
                             rm -f "$file_path"
                             remuxed_count=$((remuxed_count + 1))
@@ -1884,11 +1901,17 @@ transcode_video() {
                     if [ "$needs_transcode_for_compatibility" -eq 0 ]; then
                         return 0
                     fi
-                    # If codec incompatible, set up transcoding with source bitrate
-                    TARGET_BITRATE_MBPS="$SOURCE_BITRATE_MBPS"
-                    TARGET_BITRATE_BPS="$SOURCE_BITRATE_BPS"
-                    LOWER_BOUND=$(echo "$TARGET_BITRATE_BPS * 0.95" | bc | tr -d '\n\r')
-                    UPPER_BOUND=$(echo "$TARGET_BITRATE_BPS * 1.05" | bc | tr -d '\n\r')
+                    # If codec incompatible, set up transcoding with source bitrate.
+                    # Only override the resolution-based target if SOURCE_BITRATE_BPS is
+                    # a meaningful non-zero value — a zero source bitrate (e.g. ffprobe
+                    # returning 0 for WMV stream metadata) would corrupt the target and
+                    # cause divide-by-zero in the quality optimization loop.
+                    if (( $(echo "$(sanitize_value "${SOURCE_BITRATE_BPS:-0}") >= 100000" | bc -l 2>/dev/null || echo 0) )); then
+                        TARGET_BITRATE_MBPS="$SOURCE_BITRATE_MBPS"
+                        TARGET_BITRATE_BPS="$SOURCE_BITRATE_BPS"
+                        LOWER_BOUND=$(echo "$TARGET_BITRATE_BPS * 0.95" | bc | tr -d '\n\r')
+                        UPPER_BOUND=$(echo "$TARGET_BITRATE_BPS * 1.05" | bc | tr -d '\n\r')
+                    fi
                     # Continue to transcoding section
                 else
                     # Error handling non-QuickLook format
@@ -1897,7 +1920,7 @@ transcode_video() {
             else
                 # Rename file to include actual bitrate: {base}.orig.{bitrate}.Mbps.{ext}
                 local renamed_file="${BASE_NAME}.orig.${SOURCE_BITRATE_MBPS}.Mbps.${FILE_EXTENSION}"
-                
+
                 # Only rename if the filename would be different
                 if [ "$VIDEO_FILE" != "$renamed_file" ]; then
                     mv "$VIDEO_FILE" "$renamed_file"
@@ -1905,22 +1928,22 @@ transcode_video() {
                 fi
                 return 0
             fi
-            
+
             # Only return early if we don't need to transcode for compatibility
             if [ "$needs_transcode_for_compatibility" -eq 0 ]; then
                 return 0
             fi
             # Otherwise, fall through to transcoding section below
         fi
-        
+
         # Check if source is already below target (already more compressed than desired)
         if (( $(echo "$(sanitize_value "$SOURCE_BITRATE_BPS") < $TARGET_BITRATE_BPS" | bc -l) )); then
             info "Source video bitrate: ${SOURCE_BITRATE_MBPS} Mbps"
             info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps"
             info "Source video is already below target bitrate. No transcoding needed."
-            
+
             parse_filename "$VIDEO_FILE"
-            
+
             # Check if file needs remuxing to MP4 for QuickLook compatibility
             if is_non_quicklook_format "$VIDEO_FILE"; then
                 # Use helper function to handle non-QuickLook format
@@ -1929,11 +1952,14 @@ transcode_video() {
                     if [ "$needs_transcode_for_compatibility" -eq 0 ]; then
                         return 0
                     fi
-                    # If codec incompatible, set up transcoding with source bitrate
-                    TARGET_BITRATE_MBPS="$SOURCE_BITRATE_MBPS"
-                    TARGET_BITRATE_BPS="$SOURCE_BITRATE_BPS"
-                    LOWER_BOUND=$(echo "$TARGET_BITRATE_BPS * 0.95" | bc | tr -d '\n\r')
-                    UPPER_BOUND=$(echo "$TARGET_BITRATE_BPS * 1.05" | bc | tr -d '\n\r')
+                    # If codec incompatible, set up transcoding with source bitrate.
+                    # Only override if SOURCE_BITRATE_BPS is a meaningful non-zero value.
+                    if (( $(echo "$(sanitize_value "${SOURCE_BITRATE_BPS:-0}") >= 100000" | bc -l 2>/dev/null || echo 0) )); then
+                        TARGET_BITRATE_MBPS="$SOURCE_BITRATE_MBPS"
+                        TARGET_BITRATE_BPS="$SOURCE_BITRATE_BPS"
+                        LOWER_BOUND=$(echo "$TARGET_BITRATE_BPS * 0.95" | bc | tr -d '\n\r')
+                        UPPER_BOUND=$(echo "$TARGET_BITRATE_BPS * 1.05" | bc | tr -d '\n\r')
+                    fi
                     # Continue to transcoding section
                 else
                     # Error handling non-QuickLook format
