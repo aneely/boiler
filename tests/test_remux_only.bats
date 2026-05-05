@@ -396,12 +396,11 @@ teardown() {
         source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
         cd '$TEST_DIR'
 
-        # Mock remux_to_mp4 to simulate success without running ffmpeg
+        get_subtitle_mode_for_file() { echo 'none'; }
         remux_to_mp4() { touch \"\$2\"; return 0; }
-        is_quicklook_compatible() { return 1; }  # force incompatible
+        is_quicklook_compatible() { return 1; }
         get_video_codec() { echo 'hevc'; }
 
-        # Simulate Phase 2 inline logic
         file_path='./movie.mp4'
         parse_filename \"\$file_path\"
         base_name=\"\$BASE_NAME\"
@@ -410,13 +409,53 @@ teardown() {
         [ \"\$dirname\" != \".\" ] && prefix=\"\${dirname}/\"
         output_file=\"\${prefix}\${base_name}.remux.mp4\"
 
-        remux_to_mp4 \"\$file_path\" \"\$output_file\"
+        subtitle_mode=\$(get_subtitle_mode_for_file \"\$file_path\")
+        remux_to_mp4 \"\$file_path\" \"\$output_file\" \"\$subtitle_mode\"
 
-        # Original must still exist
         [ -f \"\$file_path\" ] && echo 'original_exists' || echo 'original_deleted'
         [ -f \"\$output_file\" ] && echo 'output_exists' || echo 'output_missing'
     "
     assert_success
     assert_line "original_exists"
     assert_line "output_exists"
+}
+
+@test "phase 2 mp4 fix: aborts and skips when user chooses abort on subtitle prompt" {
+    cd "$TEST_DIR"
+    touch movie.mp4
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        cd '$TEST_DIR'
+
+        get_subtitle_mode_for_file() { echo 'abort'; }
+        remux_called=0
+        remux_to_mp4() { remux_called=1; }
+        is_quicklook_compatible() { return 1; }
+
+        file_path='./movie.mp4'
+        parse_filename \"\$file_path\"
+        base_name=\"\$BASE_NAME\"
+        dirname=\$(dirname \"\$file_path\")
+        prefix=\"\"
+        [ \"\$dirname\" != \".\" ] && prefix=\"\${dirname}/\"
+        output_file=\"\${prefix}\${base_name}.remux.mp4\"
+
+        skipped_count=0
+        subtitle_mode=\$(get_subtitle_mode_for_file \"\$file_path\")
+        if [ \"\$subtitle_mode\" = 'abort' ]; then
+            skipped_count=\$((skipped_count + 1))
+        else
+            remux_to_mp4 \"\$file_path\" \"\$output_file\" \"\$subtitle_mode\"
+        fi
+
+        echo \"skipped:\$skipped_count\"
+        echo \"remux_called:\$remux_called\"
+        [ -f \"\$file_path\" ] && echo 'original_exists' || echo 'original_deleted'
+    "
+    assert_success
+    assert_line "skipped:1"
+    assert_line "remux_called:0"
+    assert_line "original_exists"
 }

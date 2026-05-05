@@ -300,28 +300,133 @@ bps_to_mbps() {
     echo "scale=2; $bps / 1000000" | bc | tr -d '\n\r'
 }
 
+# Detect subtitle streams in a video file.
+# Outputs one "sub_idx|codec|language" tuple per line (sub_idx is 0-based within subtitle streams).
+# Language is empty when the tag is absent or N/A.
+# Arguments: input_file
+detect_subtitle_streams() {
+    local input="$1"
+    local csv
+    csv=$(ffprobe -v error -select_streams s -show_entries stream=codec_name:stream_tags=language -of csv=p=0 "$input" 2>/dev/null) || true
+    if [ -z "$csv" ]; then
+        return 0
+    fi
+    local sub_idx=0
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        local codec lang
+        codec=$(echo "$line" | cut -d',' -f1)
+        lang=$(echo "$line" | cut -d',' -f2)
+        [ "$lang" = "N/A" ] && lang=""
+        echo "${sub_idx}|${codec}|${lang}"
+        sub_idx=$((sub_idx + 1))
+    done <<< "$csv"
+}
+
+# Classify a subtitle codec as convertible to mov_text (text-based) or not (image-based/unknown).
+# Text-based codecs (subrip, ass, ssa, webvtt, mov_text, text) can be converted.
+# Image-based codecs (hdmv_pgs_subtitle, dvd_subtitle, dvbsub, pgssub) cannot.
+# Unknown codecs are treated as not convertible.
+# Arguments: codec_name
+# Returns: 0 if convertible, 1 if not
+is_subtitle_convertible() {
+    local codec="$1"
+    local codec_lower
+    codec_lower=$(echo "$codec" | tr '[:upper:]' '[:lower:]')
+    case "$codec_lower" in
+        subrip|srt|ass|ssa|webvtt|mov_text|text)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Print a report of subtitle streams before remuxing, showing each stream's codec,
+# language, and whether it can be converted to mov_text for MP4 inclusion.
+# Arguments: subtitle_data (multi-line string of "sub_idx|codec|lang" tuples)
+report_subtitles() {
+    local subtitle_data="$1"
+    warn "Subtitle streams detected:" >&2
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        local idx codec lang
+        idx=$(echo "$line" | cut -d'|' -f1)
+        codec=$(echo "$line" | cut -d'|' -f2)
+        lang=$(echo "$line" | cut -d'|' -f3)
+        local label="  [0:s:${idx}] ${codec}"
+        [ -n "$lang" ] && label="${label} (${lang})"
+        if is_subtitle_convertible "$codec"; then
+            label="${label} — convertible to mov_text"
+        else
+            label="${label} — NOT convertible (image-based, will be dropped)"
+        fi
+        echo "$label" >&2
+    done <<< "$subtitle_data"
+}
+
+# Prompt the user to choose how to handle subtitle streams during remux.
+# Reads subtitle_data (multi-line "sub_idx|codec|lang" tuples), adapts the menu based on
+# whether all/some/none of the streams are convertible, reads stdin for the choice.
+# Prints the chosen mode to stdout: "include", "none", or "abort".
+# Empty or unrecognized input defaults to "abort" (safe default).
+# Arguments: subtitle_data
+prompt_subtitle_choice() {
+    local subtitle_data="$1"
+    local has_incompatible=0
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        local codec
+        codec=$(echo "$line" | cut -d'|' -f2)
+        if ! is_subtitle_convertible "$codec"; then
+            has_incompatible=1
+            break
+        fi
+    done <<< "$subtitle_data"
+
+    echo "" >&2
+    if [ "$has_incompatible" -eq 0 ]; then
+        echo "  [1] Include subtitles (convert to mov_text)" >&2
+    else
+        echo "  [1] Include subtitles (convertible kept, incompatible dropped)" >&2
+    fi
+    echo "  [2] Proceed without subtitles" >&2
+    echo "  [3] Abort" >&2
+    printf "Choice [1/2/3]: " >&2
+    local choice
+    read -r choice || true
+    choice=$(echo "$choice" | tr -d '[:space:]')
+    case "$choice" in
+        1) echo "include" ;;
+        2) echo "none" ;;
+        *) echo "abort" ;;
+    esac
+}
+
 # Remux video file to MP4 with QuickLook compatibility
-# Arguments: input_file, output_file
+# Arguments: input_file, output_file, subtitle_mode ("include" or "none"; default "none")
 # Returns: 0 on success, 1 on failure
 remux_to_mp4() {
     local input_file="$1"
     local output_file="$2"
-    
+    local subtitle_mode="${3:-none}"
+
     # Detect video codec to check compatibility and determine if we need HEVC tag
     local video_codec=$(get_video_codec "$input_file")
-    
+
     if [ -z "$video_codec" ]; then
         error "Could not detect video codec for $input_file"
         return 1
     fi
-    
+
     # Check if codec is compatible with MP4 container
     if ! is_codec_mp4_compatible "$video_codec"; then
         local codec_lower=$(echo "$video_codec" | tr '[:upper:]' '[:lower:]')
         warn "Video codec '$video_codec' is not compatible with MP4 container (cannot be copied without transcoding). Skipping $input_file"
         return 1
     fi
-    
+
     # Build ffmpeg command: explicit stream mapping (first video + all audio) then copy
     # Without -map, FFmpeg default stream selection picks only one audio track; mapping all preserves multi-track audio
     local num_audio
@@ -330,17 +435,20 @@ remux_to_mp4() {
     audio_codec_arg=$(get_audio_codec_arg "$input_file")
     local ffmpeg_args=(-i "$input_file" -map 0:v:0)
     [ "$num_audio" -gt 0 ] && ffmpeg_args+=(-map 0:a)
-    ffmpeg_args+=(-c:v copy -c:a "$audio_codec_arg" -movflags +faststart)
-    
+    [ "$subtitle_mode" = "include" ] && ffmpeg_args+=(-map "0:s?")
+    ffmpeg_args+=(-c:v copy -c:a "$audio_codec_arg")
+    [ "$subtitle_mode" = "include" ] && ffmpeg_args+=(-c:s mov_text)
+    ffmpeg_args+=(-movflags +faststart)
+
     # Add HEVC tag if video codec is HEVC/H.265 for QuickLook compatibility
     local codec_lower=$(echo "$video_codec" | tr '[:upper:]' '[:lower:]')
     if [ "$codec_lower" = "hevc" ] || [ "$codec_lower" = "h265" ]; then
         ffmpeg_args+=(-tag:v hvc1)
     fi
-    
+
     # Add output format and file
     ffmpeg_args+=(-f mp4 "$output_file")
-    
+
     # Execute ffmpeg command
     ffmpeg "${ffmpeg_args[@]}" -loglevel info -stats
 }
@@ -554,6 +662,23 @@ generate_output_filename() {
     fi
 }
 
+# Detect subtitle streams, report them, and prompt the user for how to handle them.
+# If no subtitles are found, prints "none" without prompting.
+# If subtitles are found, prints the report and reads a choice from stdin.
+# Prints one of: "include", "none", or "abort".
+# Arguments: input_file
+get_subtitle_mode_for_file() {
+    local input_file="$1"
+    local subtitle_data
+    subtitle_data=$(detect_subtitle_streams "$input_file")
+    if [ -z "$subtitle_data" ]; then
+        echo "none"
+        return 0
+    fi
+    report_subtitles "$subtitle_data"
+    prompt_subtitle_choice "$subtitle_data"
+}
+
 # Process a single file: measure bitrate, generate output path, remux, remove original.
 # Used by both the non-QuickLook and .mp4 processing loops.
 # Directly modifies processed_count, skipped_count, failed_count from the calling scope
@@ -591,8 +716,17 @@ process_one_file() {
         return
     fi
 
+    local subtitle_mode
+    subtitle_mode=$(get_subtitle_mode_for_file "$file_path")
+    if [ "$subtitle_mode" = "abort" ]; then
+        info "  Aborted by user"
+        skipped_count=$((skipped_count + 1))
+        echo ""
+        return
+    fi
+
     info "  Remuxing to: $(basename "$output_file")"
-    if remux_to_mp4 "$file_path" "$output_file"; then
+    if remux_to_mp4 "$file_path" "$output_file" "$subtitle_mode"; then
         rm -f "$file_path"
         info "  ✓ Successfully remuxed and removed original"
         processed_count=$((processed_count + 1))
@@ -710,8 +844,17 @@ main() {
                 continue
             fi
 
+            local subtitle_mode
+            subtitle_mode=$(get_subtitle_mode_for_file "$file_path")
+            if [ "$subtitle_mode" = "abort" ]; then
+                info "  Aborted by user"
+                skipped_count=$((skipped_count + 1))
+                echo ""
+                continue
+            fi
+
             info "  Remuxing to: $(basename "$output_file")"
-            if remux_to_mp4 "$file_path" "$output_file"; then
+            if remux_to_mp4 "$file_path" "$output_file" "$subtitle_mode"; then
                 info "  ✓ Remuxed to $(basename "$output_file") (original preserved)"
                 processed_count=$((processed_count + 1))
             else
