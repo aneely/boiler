@@ -779,7 +779,7 @@ remux_to_mp4() {
     
     # Execute ffmpeg command
     local ffmpeg_exit=0
-    ffmpeg "${ffmpeg_args[@]}" -loglevel info -stats || ffmpeg_exit=$?
+    ffmpeg "${ffmpeg_args[@]}" -loglevel error -stats || ffmpeg_exit=$?
 
     if [ "$ffmpeg_exit" -ne 0 ]; then
         error "FFmpeg remux failed (exit code $ffmpeg_exit) for $input_file"
@@ -1477,7 +1477,7 @@ calculate_interpolated_quality() {
 #     * -movflags +faststart: Metadata at beginning for QuickLook
 #     * -tag:v hvc1: Proper HEVC codec tag for macOS compatibility
 #
-# Note: Uses -loglevel info (not error) to show transcoding progress
+# Note: Uses -loglevel info -hide_banner -stats to show metadata and one updating progress line
 #
 # Used by: transcode_video (all three passes)
 transcode_full_video() {
@@ -1504,7 +1504,7 @@ transcode_full_video() {
         -tag:v hvc1 \
         -f mp4 \
         "$output_file" \
-        -loglevel info -stats || ffmpeg_exit=$?
+        -loglevel info -hide_banner -stats || ffmpeg_exit=$?
 
     if [ "$ffmpeg_exit" -ne 0 ]; then
         error "FFmpeg transcoding failed (exit code $ffmpeg_exit) for $video_file"
