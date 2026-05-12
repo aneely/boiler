@@ -36,34 +36,34 @@ teardown() {
     run bash -c "
         export REMUX_TEST_MODE=1
         source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
-        ffprobe() { echo 'subrip,eng'; }
+        ffprobe() { echo '2,subrip,eng'; }
         detect_subtitle_streams 'test.mkv'
     "
     assert_success
-    assert_output "0|subrip|eng"
+    assert_output "0|subrip|eng|2"
 }
 
 @test "detect_subtitle_streams: multiple streams output sequential indices" {
     run bash -c "
         export REMUX_TEST_MODE=1
         source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
-        ffprobe() { printf 'subrip,eng\nhdmv_pgs_subtitle,jpn\n'; }
+        ffprobe() { printf '2,subrip,eng\n3,hdmv_pgs_subtitle,jpn\n'; }
         detect_subtitle_streams 'test.mkv'
     "
     assert_success
-    assert_line "0|subrip|eng"
-    assert_line "1|hdmv_pgs_subtitle|jpn"
+    assert_line "0|subrip|eng|2"
+    assert_line "1|hdmv_pgs_subtitle|jpn|3"
 }
 
 @test "detect_subtitle_streams: missing language tag produces empty lang field" {
     run bash -c "
         export REMUX_TEST_MODE=1
         source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
-        ffprobe() { echo 'subrip,N/A'; }
+        ffprobe() { echo '2,subrip,N/A'; }
         detect_subtitle_streams 'test.mkv'
     "
     assert_success
-    assert_output "0|subrip|"
+    assert_output "0|subrip||2"
 }
 
 # ============================================================================
@@ -320,19 +320,21 @@ teardown() {
     refute_output --partial "0:s"
 }
 
-@test "remux_to_mp4: subtitle_mode=include passes subtitle map and codec to ffmpeg" {
+@test "remux_to_mp4: subtitle_mode=include maps convertible stream by global index" {
     run bash -c "
         export REMUX_TEST_MODE=1
         source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
         get_video_codec() { echo 'h264'; }
         get_audio_codec_arg() { echo 'copy'; }
         count_audio_streams() { echo '1'; }
+        detect_subtitle_streams() { printf '0|subrip|eng|2\n'; }
         ffmpeg() { echo \"\$@\"; return 0; }
         remux_to_mp4 'input.mkv' 'output.mp4' 'include'
     "
     assert_success
-    assert_output --partial "0:s?"
+    assert_output --partial "0:2"
     assert_output --partial "mov_text"
+    refute_output --partial "0:s?"
 }
 
 @test "remux_to_mp4: no subtitle_mode arg preserves current behavior (no subtitle map)" {

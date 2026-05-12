@@ -301,25 +301,27 @@ bps_to_mbps() {
 }
 
 # Detect subtitle streams in a video file.
-# Outputs one "sub_idx|codec|language" tuple per line (sub_idx is 0-based within subtitle streams).
+# Outputs one "display_idx|codec|language|global_idx" tuple per line.
+# display_idx is 0-based within subtitle streams; global_idx is the stream index from ffprobe.
 # Language is empty when the tag is absent or N/A.
 # Arguments: input_file
 detect_subtitle_streams() {
     local input="$1"
     local csv
-    csv=$(ffprobe -v error -select_streams s -show_entries stream=codec_name:stream_tags=language -of csv=p=0 "$input" 2>/dev/null) || true
+    csv=$(ffprobe -v error -select_streams s -show_entries stream=index,codec_name:stream_tags=language -of csv=p=0 "$input" 2>/dev/null) || true
     if [ -z "$csv" ]; then
         return 0
     fi
-    local sub_idx=0
+    local display_idx=0
     while IFS= read -r line; do
         [ -z "$line" ] && continue
-        local codec lang
-        codec=$(echo "$line" | cut -d',' -f1)
-        lang=$(echo "$line" | cut -d',' -f2)
+        local global_idx codec lang
+        global_idx=$(echo "$line" | cut -d',' -f1)
+        codec=$(echo "$line" | cut -d',' -f2)
+        lang=$(echo "$line" | cut -d',' -f3)
         [ "$lang" = "N/A" ] && lang=""
-        echo "${sub_idx}|${codec}|${lang}"
-        sub_idx=$((sub_idx + 1))
+        echo "${display_idx}|${codec}|${lang}|${global_idx}"
+        display_idx=$((display_idx + 1))
     done <<< "$csv"
 }
 
@@ -435,9 +437,25 @@ remux_to_mp4() {
     audio_codec_arg=$(get_audio_codec_arg "$input_file")
     local ffmpeg_args=(-i "$input_file" -map 0:v:0)
     [ "$num_audio" -gt 0 ] && ffmpeg_args+=(-map 0:a)
-    [ "$subtitle_mode" = "include" ] && ffmpeg_args+=(-map "0:s?")
+
+    local has_convertible=0
+    if [ "$subtitle_mode" = "include" ]; then
+        local sub_data
+        sub_data=$(detect_subtitle_streams "$input_file")
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            local s_codec s_global_idx
+            s_codec=$(echo "$line" | cut -d'|' -f2)
+            s_global_idx=$(echo "$line" | cut -d'|' -f4)
+            if is_subtitle_convertible "$s_codec"; then
+                ffmpeg_args+=(-map "0:${s_global_idx}")
+                has_convertible=1
+            fi
+        done <<< "$sub_data"
+    fi
+
     ffmpeg_args+=(-c:v copy -c:a "$audio_codec_arg")
-    [ "$subtitle_mode" = "include" ] && ffmpeg_args+=(-c:s mov_text)
+    [ "$has_convertible" -eq 1 ] && ffmpeg_args+=(-c:s mov_text)
     ffmpeg_args+=(-movflags +faststart)
 
     # Add HEVC tag if video codec is HEVC/H.265 for QuickLook compatibility

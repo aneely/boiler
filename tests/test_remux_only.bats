@@ -459,3 +459,44 @@ teardown() {
     assert_line "remux_called:0"
     assert_line "original_exists"
 }
+
+# ============================================================================
+# remux_to_mp4(): per-stream subtitle mapping (bug fix)
+# ============================================================================
+
+@test "remux_to_mp4: mixed subtitles - only convertible stream mapped by global index" {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_codec() { echo 'h264'; }
+        get_audio_codec_arg() { echo 'copy'; }
+        count_audio_streams() { echo '1'; }
+        detect_subtitle_streams() { printf '0|subrip|eng|2\n1|hdmv_pgs_subtitle|jpn|3\n'; }
+        ffmpeg() { echo \"\$@\"; return 0; }
+        remux_to_mp4 'input.mkv' 'output.mp4' 'include'
+    "
+    assert_success
+    assert_output --partial "0:2"
+    refute_output --partial "0:3"
+    assert_output --partial "mov_text"
+    refute_output --partial "0:s?"
+}
+
+@test "remux_to_mp4: all-incompatible subtitles - no subtitle map or mov_text emitted" {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_codec() { echo 'h264'; }
+        get_audio_codec_arg() { echo 'copy'; }
+        count_audio_streams() { echo '1'; }
+        detect_subtitle_streams() { printf '0|hdmv_pgs_subtitle|eng|2\n1|dvd_subtitle|spa|3\n'; }
+        ffmpeg() { echo \"\$@\"; return 0; }
+        remux_to_mp4 'input.mkv' 'output.mp4' 'include'
+    "
+    assert_success
+    refute_output --partial "0:s?"
+    refute_output --partial "mov_text"
+    refute_output --partial "0:2"
+    refute_output --partial "0:3"
+    refute_output --partial "c:s"
+}
