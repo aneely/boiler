@@ -16,6 +16,8 @@
 #   - MOCK_RESOLUTION: Override resolution returned by get_video_resolution()
 #   - MOCK_DURATION: Override duration returned by get_video_duration()
 #   - MOCK_BITRATE_BPS: Override bitrate returned by measure_bitrate()
+#   - MOCK_WIDTH / MOCK_HEIGHT / MOCK_OUTPUT_DIMS / MOCK_ROTATION: Frame size, encoded-output size
+#     and rotation returned by get_video_dimensions() / get_video_rotation() (auto-crop tests)
 
 # Test statistics
 TESTS_RUN=0
@@ -207,12 +209,32 @@ get_video_duration() {
     echo "${MOCK_DURATION:-300}"
 }
 
+# Mock get_video_dimensions() - returns "W H" (default: 1920 x MOCK_RESOLUTION; temp_transcode files
+# report MOCK_OUTPUT_DIMS when set so crop output verification can be exercised)
+get_video_dimensions() {
+    local video_file="$1"
+    if [[ "$video_file" == *"temp_transcode"* ]] && [ -n "${MOCK_OUTPUT_DIMS:-}" ]; then
+        echo "${MOCK_OUTPUT_DIMS}"
+    else
+        echo "${MOCK_WIDTH:-1920} ${MOCK_HEIGHT:-${MOCK_RESOLUTION:-1080}}"
+    fi
+}
+
+# Mock get_video_rotation() - returns mock rotation (default: 0)
+get_video_rotation() {
+    echo "${MOCK_ROTATION:-0}"
+}
+
 # Mock ffprobe for codec detection (used by remux_to_mp4)
-# Returns codec from MOCK_VIDEO_CODEC if set, otherwise returns h264
+# Returns codec from MOCK_VIDEO_CODEC if set, otherwise returns h264; audio queries return MOCK_AUDIO_CODEC (default aac)
 ffprobe() {
     # Check if this is a codec_name query (used by remux_to_mp4)
     if [[ "$*" == *"codec_name"* ]]; then
-        echo "${MOCK_VIDEO_CODEC:-h264}"
+        if [[ "$*" == *"select_streams a"* ]]; then
+            echo "${MOCK_AUDIO_CODEC-aac}"
+        else
+            echo "${MOCK_VIDEO_CODEC:-h264}"
+        fi
     else
         # For other ffprobe calls, return empty (let other mocks handle it)
         echo ""
@@ -1185,6 +1207,21 @@ test_extract_and_matching() {
     bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; should_skip_file 'video.mpg'" && result="skip" || result="process"
     assert_equal "$result" "skip" "should_skip_file: skips .mpg original when encoded .mp4 exists"
     
+    # Names with glob characters must still match their own encoded copy (find -iname globs the pattern)
+    local gname
+    for gname in 'Movie [2024]' '[1080p] Title' 'a*b' 'what?' 'back\slash' "it's (2024)"; do
+        rm -f ./*
+        touch "$gname.mp4" "$gname.fmpg.6.05.Mbps.mp4"
+        bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; should_skip_file \"./\$1.mp4\"" -- "$gname" && result="skip" || result="process"
+        assert_equal "$result" "skip" "should_skip_file: skips source whose name has glob characters ($gname)"
+    done
+    rm -f ./*
+    touch '[ab].mp4' 'a.fmpg.6.05.Mbps.mp4'
+    bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; has_encoded_version '[ab].mp4'" && result="has_encoded" || result="no_encoded"
+    assert_equal "$result" "no_encoded" "has_encoded_version: [ab] is not a character class matching another video's copy"
+    rm -f ./*
+    touch video.mp4 video.fmpg.10.25.Mbps.mp4
+
     # Test find_all_video_files: skips both original and encoded when both exist
     touch video.mp4 video.fmpg.10.25.Mbps.mp4 another.mkv
     local found_files=$(bash -c "export BOILER_TEST_MODE=1; source /Users/andrewneely/dev/boiler/boiler.sh; cd '$temp_dir'; find_all_video_files")
@@ -2657,6 +2694,2139 @@ test_remux_select_audio_nothing_to_do() {
     rm -rf "$tmp"
 }
 test_remux_select_audio_nothing_to_do
+
+# ============================================================================
+# Auto-crop (--auto-crop / --crop-detect-only)
+# See plans/in-progress/AUTO-CROP-FEATURE-PLAN.md
+# ============================================================================
+
+echo "Testing auto-crop parsing and math helpers..."
+test_crop_helpers() {
+    local out exit_code
+    has() { [[ "$1" == *"$2"* ]] && echo yes || echo no; }
+
+    # parse_cropdetect_output: last crop= value wins
+    out=$(parse_cropdetect_output $'[Parsed_cropdetect_0 @ 0x1] crop=1920:816:0:132\n[Parsed_cropdetect_0 @ 0x1] crop=1920:800:0:140\nframe=1')
+    assert_equal "$out" "1920:800:0:140" "parse_cropdetect_output: returns the last crop= value"
+    out=$(parse_cropdetect_output "ffmpeg: Invalid data found when processing input")
+    assert_empty "$out" "parse_cropdetect_output: empty when there is no crop line"
+
+    # parse_cropdetect_output: malformed lines are rejected, never passed to bc
+    assert_empty "$(parse_cropdetect_output "[Parsed_cropdetect_0 @ 0x1] crop=1920:808:0:")" "parse_cropdetect_output: rejects empty field"
+    assert_empty "$(parse_cropdetect_output "[Parsed_cropdetect_0 @ 0x1] crop=1920:808:0")" "parse_cropdetect_output: rejects three fields"
+    assert_empty "$(parse_cropdetect_output "[Parsed_cropdetect_0 @ 0x1] crop=abc:808:0:136")" "parse_cropdetect_output: rejects non-numeric field"
+    out=$(parse_cropdetect_output $'[Parsed_cropdetect_0 @ 0x1] crop=1920:800:0:140\n[Parsed_cropdetect_0 @ 0x1] crop=1920:80')
+    assert_equal "$out" "1920:800:0:140" "parse_cropdetect_output: falls back to last valid line when final is garbled"
+    out=$(parse_cropdetect_output $'[Parsed_cropdetect_0 @ 0x1] crop=1920:800:0:140\r\n')
+    assert_equal "$out" "1920:800:0:140" "parse_cropdetect_output: tolerates CRLF"
+
+    # bc guards: bad input warns and never surfaces a bc parse error
+    out=$(crop_removed_pct "1920::0:140" 1920 1080 2>&1)
+    assert_equal "$(has "$out" "Cannot compute removed area")" yes "crop_removed_pct: warns on malformed crop"
+    assert_equal "$(has "$out" "Parse error")" no "crop_removed_pct: no bc parse error on malformed crop"
+    out=$(crop_removed_pct "1920:800:0:140" "" 1080 2>&1)
+    assert_equal "$(has "$out" "Cannot compute removed area")" yes "crop_removed_pct: warns on empty frame width"
+    out=$(detect_black_bars /nonexistent.mp4 "N/A" 320 240 2>&1)
+    assert_equal "$(has "$out" "Unusable duration 'N/A'")" yes "detect_black_bars: warns on non-numeric duration"
+    assert_equal "$(has "$out" "Parse error")" no "detect_black_bars: no bc parse error on non-numeric duration"
+
+    # detect_crop_for_file progress message reflects the real sampling mode
+    out=$(detect_crop_for_file /nonexistent.mp4 6 2>&1)
+    assert_equal "$(has "$out" "Detecting black bars (scanning the whole video)")" "yes" "detect_crop_for_file: short video reports whole-video scan"
+    out=$(detect_crop_for_file /nonexistent.mp4 600 2>&1)
+    assert_equal "$(has "$out" "Detecting black bars (12 windows)")" "yes" "detect_crop_for_file: long video reports window count"
+
+    # get_video_dimensions: key=value parsing, immune to stray separators from side-data streams.
+    # The suite mocks get_video_dimensions(), so run the real one in a fresh shell with ffprobe stubbed.
+    dims_with_ffprobe() {
+        FAKE_FFPROBE_OUTPUT="$1" BOILER_TEST_MODE=1 bash -c '
+            source ./boiler.sh 2>/dev/null
+            ffprobe() { printf "%s" "$FAKE_FFPROBE_OUTPUT"; }
+            get_video_dimensions whatever.mp4'
+    }
+    assert_equal "$(dims_with_ffprobe $'width=3840\r\nheight=2160\r\n[SIDE_DATA]\r\n')" "3840 2160" "get_video_dimensions: ignores extra output and CRLF"
+    assert_empty "$(dims_with_ffprobe $'width=N/A\nheight=\n')" "get_video_dimensions: empty when ffprobe output is unusable"
+
+    # combine_crop_boxes: union
+    assert_equal "$(combine_crop_boxes "1920:800:0:140")" "1920:800:0:140" "combine_crop_boxes: single box unchanged"
+    assert_equal "$(combine_crop_boxes "1920:800:0:140" "1800:800:100:100")" "1920:840:0:100" "combine_crop_boxes: union takes widest extent"
+    assert_equal "$(combine_crop_boxes "1920:800:0:140" "1920:1080:0:0")" "1920:1080:0:0" "combine_crop_boxes: full-frame box makes union full-frame"
+    assert_empty "$(combine_crop_boxes)" "combine_crop_boxes: no boxes gives empty output"
+
+    # crop_removed_pct
+    assert_equal "$(crop_removed_pct "1920:800:0:140" 1920 1080)" "25.9" "crop_removed_pct: 1920x800 of 1920x1080 removes 25.9%"
+    assert_equal "$(crop_removed_pct "1920:1080:0:0" 1920 1080)" "0.0" "crop_removed_pct: full frame removes 0.0%"
+
+    # validate_crop_params
+    set +e
+    validate_crop_params "1920:800:0:140" 1920 1080 2>/dev/null
+    assert_exit_code $? 0 "validate_crop_params: accepts a normal letterbox crop"
+    validate_crop_params "1919:800:0:140" 1920 1080 2>/dev/null
+    assert_exit_code $? 1 "validate_crop_params: rejects odd width"
+    validate_crop_params "1920:800:0:141" 1920 1080 2>/dev/null
+    assert_exit_code $? 1 "validate_crop_params: rejects odd offset"
+    validate_crop_params "8:800:0:140" 1920 1080 2>/dev/null
+    assert_exit_code $? 1 "validate_crop_params: rejects results under 16 pixels"
+    validate_crop_params "1920:400:0:340" 1920 1080 2>/dev/null
+    assert_exit_code $? 1 "validate_crop_params: rejects crops removing more than half the frame"
+    validate_crop_params "1920:800:0:400" 1920 1080 2>/dev/null
+    assert_exit_code $? 1 "validate_crop_params: rejects crops outside the frame"
+    validate_crop_params "1920:800" 1920 1080 2>/dev/null
+    assert_exit_code $? 1 "validate_crop_params: rejects malformed input"
+    set -e
+}
+test_crop_helpers
+
+echo ""
+
+echo "Testing auto-crop argument parsing..."
+test_crop_parse_arguments() {
+    AUTO_CROP=0; CROP_DETECT_ONLY=0
+    parse_arguments -L 1
+    assert_equal "$AUTO_CROP$CROP_DETECT_ONLY" "00" "parse_arguments: auto-crop is off by default"
+
+    AUTO_CROP=0; CROP_DETECT_ONLY=0
+    parse_arguments --auto-crop
+    assert_equal "$AUTO_CROP$CROP_DETECT_ONLY" "10" "parse_arguments: --auto-crop enables auto-crop only"
+
+    AUTO_CROP=0; CROP_DETECT_ONLY=0
+    parse_arguments --crop-detect-only
+    assert_equal "$AUTO_CROP$CROP_DETECT_ONLY" "11" "parse_arguments: --crop-detect-only implies auto-crop"
+
+    local usage
+    usage=$(show_usage 2>&1)
+    assert_not_empty "$(echo "$usage" | grep -- '--auto-crop' || true)" "show_usage: documents --auto-crop"
+    assert_not_empty "$(echo "$usage" | grep -- '--crop-detect-only' || true)" "show_usage: documents --crop-detect-only"
+
+    AUTO_CROP=0; CROP_DETECT_ONLY=0
+}
+test_crop_parse_arguments
+
+echo ""
+
+echo "Testing detect_black_bars() against generated clips..."
+test_detect_black_bars_real() {
+    if ! command -v ffmpeg &> /dev/null || ! command -v ffprobe &> /dev/null; then
+        echo "  (Skipping detect_black_bars tests: ffmpeg/ffprobe not in PATH)"
+        return 0
+    fi
+    local fix root
+    root=$(pwd)
+    fix=$(mktemp -d)
+    local enc=(-c:v libx264 -preset ultrafast -pix_fmt yuv420p -g 10)
+    local common=(-v error -y -f lavfi)
+
+    # 320x240 clips; content is testsrc2 so the active picture is clearly non-black
+    ffmpeg "${common[@]}" -i "testsrc2=s=320x180:r=5:d=40,pad=320:240:0:30:black" "${enc[@]}" "$fix/letterbox.mp4" 2>/dev/null
+    ffmpeg "${common[@]}" -i "testsrc2=s=240x240:r=5:d=40,pad=320:240:40:0:black" "${enc[@]}" "$fix/pillarbox.mp4" 2>/dev/null
+    ffmpeg "${common[@]}" -i "testsrc2=s=320x240:r=5:d=40" "${enc[@]}" "$fix/full.mp4" 2>/dev/null
+    ffmpeg "${common[@]}" -i "testsrc2=s=320x236:r=5:d=40,pad=320:240:0:2:black" "${enc[@]}" "$fix/tinybars.mp4" 2>/dev/null
+    ffmpeg "${common[@]}" -i "color=c=black:s=320x240:r=5:d=20" \
+        -f lavfi -i "testsrc2=s=320x180:r=5:d=20,pad=320:240:0:30:black" \
+        -filter_complex "[0:v][1:v]concat=n=2:v=1:a=0" "${enc[@]}" "$fix/dark_then_letterbox.mp4" 2>/dev/null
+    ffmpeg "${common[@]}" -i "testsrc2=s=320x180:r=5:d=20,pad=320:240:0:30:black" \
+        -f lavfi -i "testsrc2=s=320x240:r=5:d=20" \
+        -filter_complex "[0:v][1:v]concat=n=2:v=1:a=0" "${enc[@]}" "$fix/variable_aspect.mp4" 2>/dev/null
+    ffmpeg "${common[@]}" -i "testsrc2=s=320x180:r=5:d=40,pad=320:240:0:30:black,drawbox=x=100:y=0:w=120:h=20:color=white:t=fill" \
+        "${enc[@]}" "$fix/burned_subs.mp4" 2>/dev/null
+    ffmpeg "${common[@]}" -i "testsrc2=s=320x180:r=5:d=6,pad=320:240:0:30:black" "${enc[@]}" "$fix/short_letterbox.mp4" 2>/dev/null
+    ffmpeg "${common[@]}" -i "testsrc2=s=320x180:r=5:d=40,pad=320:240:0:30:black" \
+        -c:v libx264 -preset ultrafast -pix_fmt yuv420p10le -g 10 "$fix/letterbox_10bit.mp4" 2>/dev/null
+
+    # Run against real ffmpeg in a fresh shell (the harness mocks ffprobe and probe helpers)
+    detect_real() {
+        local func_name="$1"
+        shift
+        bash -c "
+            set +e
+            export BOILER_TEST_MODE=1
+            source '$root/boiler.sh' 2>/dev/null
+            $func_name \"\$@\"
+        " -- "$@"
+    }
+
+    assert_equal "$(detect_real detect_black_bars "$fix/letterbox.mp4" 40 320 240 2>/dev/null)" "320:180:0:30" "detect_black_bars: finds letterbox"
+    assert_equal "$(detect_real detect_black_bars "$fix/pillarbox.mp4" 40 320 240 2>/dev/null)" "240:240:40:0" "detect_black_bars: finds pillarbox"
+    assert_empty "$(detect_real detect_black_bars "$fix/full.mp4" 40 320 240 2>/dev/null)" "detect_black_bars: full-frame video has no crop"
+    assert_empty "$(detect_real detect_black_bars "$fix/tinybars.mp4" 40 320 240 2>/dev/null)" "detect_black_bars: bars below the minimum are ignored"
+    assert_equal "$(detect_real detect_black_bars "$fix/dark_then_letterbox.mp4" 40 320 240 2>/dev/null)" "320:180:0:30" "detect_black_bars: dark scenes do not cause over-cropping"
+    assert_empty "$(detect_real detect_black_bars "$fix/variable_aspect.mp4" 40 320 240 2>/dev/null)" "detect_black_bars: variable aspect ratio uses the most conservative crop"
+    assert_equal "$(detect_real detect_black_bars "$fix/burned_subs.mp4" 40 320 240 2>/dev/null)" "320:210:0:0" "detect_black_bars: burned-in text in a bar is not cropped away"
+    assert_equal "$(detect_real detect_black_bars "$fix/short_letterbox.mp4" 6 320 240 2>/dev/null)" "320:180:0:30" "detect_black_bars: short video scanned as a single whole-file window"
+    assert_equal "$(detect_real detect_black_bars "$fix/letterbox_10bit.mp4" 40 320 240 2>/dev/null)" "320:180:0:30" "detect_black_bars: finds letterbox in 10-bit video (limit scales with bit depth)"
+    assert_empty "$(CROP_LIMIT=abc detect_real detect_black_bars "$fix/letterbox.mp4" 40 320 240 2>/dev/null)" "detect_black_bars: non-numeric CROP_LIMIT does not crop"
+    assert_empty "$(CROP_MIN_REMOVED_PCT=30 detect_real detect_black_bars "$fix/letterbox.mp4" 40 320 240 2>/dev/null)" "detect_black_bars: respects CROP_MIN_REMOVED_PCT"
+    assert_equal "$(detect_real get_video_rotation "$fix/letterbox.mp4" 2>/dev/null)" "0" "get_video_rotation: untagged clip reports 0"
+    assert_equal "$(detect_real get_video_dimensions "$fix/letterbox.mp4" 2>/dev/null)" "320 240" "get_video_dimensions: reports width and height"
+
+    unset -f detect_real
+    rm -rf "$fix"
+}
+test_detect_black_bars_real
+
+echo ""
+
+echo "Testing detect_crop_for_file() and verify_crop_output()..."
+test_detect_crop_for_file() {
+    local output
+
+    detect_black_bars() { echo "1920:800:0:140"; }
+    CROP_PARAMS=""
+    detect_crop_for_file "video.mp4" 300 2>/dev/null
+    assert_equal "$CROP_PARAMS" "1920:800:0:140" "detect_crop_for_file: sets CROP_PARAMS from detection"
+
+    detect_black_bars() { echo ""; }
+    CROP_PARAMS="stale"
+    detect_crop_for_file "video.mp4" 300 2>/dev/null
+    assert_empty "$CROP_PARAMS" "detect_crop_for_file: clears CROP_PARAMS when no crop applies"
+
+    detect_black_bars() { echo "1920:800:0:140"; }
+    MOCK_ROTATION=90
+    output=$(detect_crop_for_file "video.mp4" 300 2>&1)
+    assert_not_empty "$(echo "$output" | grep -i "rotation" || true)" "detect_crop_for_file: warns for rotation-tagged files"
+    CROP_PARAMS="stale"
+    detect_crop_for_file "video.mp4" 300 2>/dev/null
+    assert_empty "$CROP_PARAMS" "detect_crop_for_file: skips rotation-tagged files"
+    unset MOCK_ROTATION
+
+    set +e
+    MOCK_OUTPUT_DIMS="1920 800"
+    verify_crop_output "x_temp_transcode.mp4" "1920:800:0:140" 2>/dev/null
+    assert_exit_code $? 0 "verify_crop_output: passes when dimensions match the crop"
+    MOCK_OUTPUT_DIMS="1920 1080"
+    output=$(verify_crop_output "x_temp_transcode.mp4" "1920:800:0:140" 2>&1)
+    assert_exit_code $? 1 "verify_crop_output: fails when dimensions differ"
+    set -e
+    assert_not_empty "$(echo "$output" | grep "expected 1920x800" || true)" "verify_crop_output: reports expected size"
+    unset MOCK_OUTPUT_DIMS
+    CROP_PARAMS=""
+}
+test_detect_crop_for_file
+
+echo ""
+
+echo "Testing crop filter in transcode_sample() and transcode_full_video()..."
+test_crop_filter_args() {
+    local tmpdir args
+    tmpdir=$(mktemp -d)
+    touch "$tmpdir/in.mp4"
+
+    # Real encode functions with ffmpeg stubbed to record its arguments
+    encode_with_stub() {
+        local crop="$1" func_name="$2"
+        shift 2
+        bash -c "
+            set +e
+            export BOILER_TEST_MODE=1
+            source '$(pwd)/boiler.sh' 2>/dev/null
+            CROP_PARAMS='$crop'
+            ffmpeg() { printf '%s\n' \"\$*\" > '$tmpdir/args'; echo data > '$tmpdir/out.mp4'; }
+            ffprobe() {
+                if [[ \"\$*\" == *codec_name* ]] && [[ \"\$*\" == *select_streams\ a* ]]; then echo aac
+                elif [[ \"\$*\" == *codec_name* ]]; then echo h264
+                elif [[ \"\$*\" == *csv=p=0* ]]; then echo 1
+                else echo ''; fi
+            }
+            $func_name \"\$@\"
+        " -- "$@" 2>/dev/null
+    }
+
+    encode_with_stub "1920:800:0:140" transcode_sample "$tmpdir/in.mp4" 10 5 60 "$tmpdir/out.mp4"
+    args=$(cat "$tmpdir/args")
+    assert_not_empty "$(echo "$args" | grep -F -- "-vf crop=1920:800:0:140" || true)" "transcode_sample: adds crop filter when CROP_PARAMS is set"
+
+    rm -f "$tmpdir/args" "$tmpdir/out.mp4"
+    encode_with_stub "" transcode_sample "$tmpdir/in.mp4" 10 5 60 "$tmpdir/out.mp4"
+    args=$(cat "$tmpdir/args")
+    assert_empty "$(echo "$args" | grep -F -- "-vf" || true)" "transcode_sample: no filter when CROP_PARAMS is empty"
+
+    rm -f "$tmpdir/args" "$tmpdir/out.mp4"
+    encode_with_stub "1920:800:0:140" transcode_full_video "$tmpdir/in.mp4" "$tmpdir/out.mp4" 60
+    args=$(cat "$tmpdir/args")
+    assert_not_empty "$(echo "$args" | grep -F -- "-vf crop=1920:800:0:140" || true)" "transcode_full_video: adds crop filter when CROP_PARAMS is set"
+
+    rm -f "$tmpdir/args" "$tmpdir/out.mp4"
+    encode_with_stub "" transcode_full_video "$tmpdir/in.mp4" "$tmpdir/out.mp4" 60
+    args=$(cat "$tmpdir/args")
+    assert_empty "$(echo "$args" | grep -F -- "-vf" || true)" "transcode_full_video: no filter when CROP_PARAMS is empty"
+
+    unset -f encode_with_stub
+    rm -rf "$tmpdir"
+}
+test_crop_filter_args
+
+echo ""
+
+echo "Testing transcode_video() with a detected crop..."
+# Shared setup/teardown for crop integration tests (mocked encodes, 1080p source)
+crop_it_setup() {
+    CROP_IT_DIR=$(mktemp -d)
+    cd "$CROP_IT_DIR" || exit 1
+    reset_call_tracking
+    touch "test_video.mp4"
+    MOCK_VIDEO_FILE="test_video.mp4"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_OUTPUT_DIMS="1920 800"
+    MOCK_OUTPUT_BITRATE_BPS=8000000
+    MOCK_SAMPLE_BITRATE_BPS=8000000
+    AUTO_CROP=1
+    CROP_DETECT_ONLY=0
+    CROP_PARAMS=""
+    detect_black_bars() { echo "1920:800:0:140"; }
+}
+crop_it_teardown() {
+    unset MOCK_VIDEO_FILE MOCK_RESOLUTION MOCK_DURATION MOCK_OUTPUT_DIMS MOCK_OUTPUT_BITRATE_BPS MOCK_SAMPLE_BITRATE_BPS MOCK_BITRATE_BPS
+    AUTO_CROP=0
+    CROP_DETECT_ONLY=0
+    CROP_PARAMS=""
+    cd - > /dev/null || true
+    rm -rf "$CROP_IT_DIR"
+}
+
+test_transcode_video_crop() {
+    local output exit_code
+
+    # Within tolerance + crop: re-encoded instead of skipped/renamed
+    crop_it_setup
+    MOCK_BITRATE_BPS=8000000
+    set +e
+    output=$(transcode_video "test_video.mp4" 2>&1)
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "transcode_video crop: completes when source is within tolerance"
+    assert_not_empty "$(echo "$output" | grep "Re-encoding to apply crop" || true)" "transcode_video crop: re-encodes instead of short-circuiting"
+    assert_empty "$(echo "$output" | grep "No transcoding needed" || true)" "transcode_video crop: no 'no transcoding needed' message"
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "1" "transcode_video crop: calls transcode_full_video"
+    assert_equal "$([ -f test_video.fmpg.8.00.Mbps.mp4 ] && echo yes || echo no)" "yes" "transcode_video crop: creates .fmpg. output"
+    assert_equal "$([ -f test_video.orig.8.00.Mbps.mp4 ] && echo yes || echo no)" "no" "transcode_video crop: does not rename source to .orig."
+    crop_it_teardown
+
+    # Below target + crop: source bitrate becomes the target
+    crop_it_setup
+    MOCK_BITRATE_BPS=3000000
+    MOCK_OUTPUT_BITRATE_BPS=3000000
+    MOCK_SAMPLE_BITRATE_BPS=3000000
+    set +e
+    output=$(transcode_video "test_video.mp4" 2>&1)
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "transcode_video crop: completes when source is below target"
+    assert_not_empty "$(echo "$output" | grep "using source bitrate" || true)" "transcode_video crop: below-target source uses its own bitrate as target"
+    assert_equal "$([ -f test_video.fmpg.3.00.Mbps.mp4 ] && echo yes || echo no)" "yes" "transcode_video crop: below-target output named from source bitrate"
+    crop_it_teardown
+
+    # Explicit target bitrate is never replaced
+    crop_it_setup
+    MOCK_BITRATE_BPS=3000000
+    MOCK_OUTPUT_BITRATE_BPS=9500000
+    MOCK_SAMPLE_BITRATE_BPS=9500000
+    set +e
+    output=$(transcode_video "test_video.mp4" "9.5" 2>&1)
+    exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "transcode_video crop: completes with explicit target bitrate"
+    assert_empty "$(echo "$output" | grep "using source bitrate" || true)" "transcode_video crop: explicit target bitrate is never replaced"
+    assert_not_empty "$(echo "$output" | grep "Target bitrate (override): 9.5 Mbps" || true)" "transcode_video crop: explicit target bitrate used verbatim"
+    crop_it_teardown
+
+    # Tier stays on the pre-crop height
+    crop_it_setup
+    MOCK_BITRATE_BPS=20000000
+    set +e
+    output=$(transcode_video "test_video.mp4" 2>&1)
+    set -e
+    assert_not_empty "$(echo "$output" | grep "Target bitrate: 8 Mbps (1080p)" || true)" "transcode_video crop: tier comes from pre-crop height (1080p)"
+    assert_empty "$(echo "$output" | grep "(720p)" || true)" "transcode_video crop: cropped height does not change the tier"
+    crop_it_teardown
+
+    # No crop detected: existing short-circuit still applies
+    crop_it_setup
+    detect_black_bars() { echo ""; }
+    MOCK_BITRATE_BPS=8000000
+    set +e
+    output=$(transcode_video "test_video.mp4" 2>&1)
+    set -e
+    assert_not_empty "$(echo "$output" | grep "No transcoding needed" || true)" "transcode_video crop: no crop detected keeps the normal short-circuit"
+    assert_equal "$(count_calls "$TRANSCODE_FULL_CALLS_FILE")" "0" "transcode_video crop: no crop detected means no encode"
+    crop_it_teardown
+
+    # Detection does not run without --auto-crop
+    crop_it_setup
+    AUTO_CROP=0
+    detect_black_bars() { echo "called" >> "$CROP_IT_DIR/detect_called"; echo "1920:800:0:140"; }
+    MOCK_BITRATE_BPS=8000000
+    set +e
+    output=$(transcode_video "test_video.mp4" 2>&1)
+    set -e
+    assert_not_empty "$(echo "$output" | grep "No transcoding needed" || true)" "transcode_video crop: without --auto-crop behavior is unchanged"
+    assert_equal "$([ -f "$CROP_IT_DIR/detect_called" ] && echo yes || echo no)" "no" "transcode_video crop: detection does not run without --auto-crop"
+    crop_it_teardown
+
+    # Output size mismatch fails the file and removes the temp output
+    crop_it_setup
+    MOCK_BITRATE_BPS=20000000
+    MOCK_OUTPUT_DIMS="1920 1080"
+    set +e
+    output=$(transcode_video "test_video.mp4" 2>&1)
+    exit_code=$?
+    set -e
+    assert_exit_code_nonzero $exit_code "transcode_video crop: fails when output is not the cropped size"
+    assert_not_empty "$(echo "$output" | grep "expected 1920x800" || true)" "transcode_video crop: reports the expected size"
+    assert_equal "$([ -f test_video_temp_transcode.mp4 ] && echo yes || echo no)" "no" "transcode_video crop: removes temp output on size mismatch"
+    crop_it_teardown
+
+    # Crop state does not leak between files
+    crop_it_setup
+    touch second.mp4
+    MOCK_BITRATE_BPS=20000000
+    detect_black_bars() { [[ "$1" == *second* ]] && echo "" || echo "1920:800:0:140"; }
+    set +e
+    transcode_video "test_video.mp4" > /dev/null 2>&1
+    set -e
+    assert_equal "$CROP_PARAMS" "1920:800:0:140" "transcode_video crop: crop is active for the first file"
+    MOCK_BITRATE_BPS=8000000
+    set +e
+    transcode_video "second.mp4" > /dev/null 2>&1
+    set -e
+    assert_empty "$CROP_PARAMS" "transcode_video crop: crop does not leak into the next file"
+    crop_it_teardown
+}
+test_transcode_video_crop
+
+echo ""
+
+echo "Testing auto-crop with preprocessing and --crop-detect-only..."
+test_crop_preprocess_and_detect_only() {
+    local output
+
+    # mkv within tolerance, no crop: remuxed as before
+    crop_it_setup
+    rm -f test_video.mp4
+    touch movie.mkv
+    MOCK_BITRATE_BPS=8000000
+    detect_black_bars() { echo ""; }
+    set +e
+    preprocess_non_quicklook_files > /dev/null 2>&1
+    set -e
+    assert_equal "$(count_calls "$REMUX_CALLS_FILE")" "1" "preprocess crop: mkv within tolerance is remuxed when no crop is detected"
+    crop_it_teardown
+
+    # mkv within tolerance, crop detected: left alone for the main pass
+    crop_it_setup
+    rm -f test_video.mp4
+    touch movie.mkv
+    MOCK_BITRATE_BPS=8000000
+    set +e
+    output=$(preprocess_non_quicklook_files 2>&1)
+    set -e
+    assert_not_empty "$(echo "$output" | grep "skipping remux" || true)" "preprocess crop: reports skipping remux when a crop is detected"
+    assert_equal "$(count_calls "$REMUX_CALLS_FILE")" "0" "preprocess crop: mkv needing a crop is not remuxed"
+    assert_equal "$([ -f movie.mkv ] && echo yes || echo no)" "yes" "preprocess crop: mkv needing a crop is left in place"
+    crop_it_teardown
+
+    # --crop-detect-only: reports, changes nothing
+    crop_it_setup
+    CROP_DETECT_ONLY=1
+    MOCK_BITRATE_BPS=8000000
+    set +e
+    output=$(main 2>&1)
+    local exit_code=$?
+    set -e
+    assert_exit_code $exit_code 0 "main --crop-detect-only: exits 0"
+    assert_not_empty "$(echo "$output" | grep "crop=1920:800:0:140" || true)" "main --crop-detect-only: reports the detected crop"
+    assert_equal "$(count_calls "$TRANSCODE_SAMPLE_CALLS_FILE")$(count_calls "$TRANSCODE_FULL_CALLS_FILE")$(count_calls "$REMUX_CALLS_FILE")" "000" "main --crop-detect-only: encodes and remuxes nothing"
+    assert_equal "$([ -f test_video.mp4 ] && echo yes || echo no)" "yes" "main --crop-detect-only: leaves files untouched"
+    crop_it_teardown
+
+    unset -f detect_black_bars
+}
+test_crop_preprocess_and_detect_only
+
+echo ""
+
+# ============================================================================
+# Script-level and subtitle tests (parity with tests/*.bats)
+#
+# These are transcribed one-to-one from the bats files named in each section, with the
+# bats test bodies kept verbatim. A minimal bats-compatible shim (run, assert_success,
+# assert_output, assert_line, ...) lets the same bodies run under this harness; each
+# bats test counts as one assertion here.
+# ============================================================================
+
+PROJECT_ROOT="$(pwd)"
+TESTS_DIR="$PROJECT_ROOT/tests"
+
+# --- bats-compatible shim --------------------------------------------------
+# run: capture combined output, status and lines (never fails the caller)
+run() {
+    local _rc=0
+    output=$("$@" 2>&1) || _rc=$?
+    status=$_rc
+    lines=()
+    local _l
+    while IFS= read -r _l; do
+        lines+=("$_l")
+    done <<< "$output"
+    return 0
+}
+assert_success() {
+    if [ "${status:-1}" -ne 0 ]; then
+        echo "expected success, got status ${status}; output: ${output}" >&2
+        return 1
+    fi
+}
+# assert_output [--partial STR | STR]
+assert_output() {
+    if [ "${1:-}" = "--partial" ]; then
+        if [[ "$output" != *"$2"* ]]; then
+            echo "expected output to contain '$2'; got: ${output}" >&2
+            return 1
+        fi
+    else
+        if [ "$output" != "$1" ]; then
+            echo "expected output '$1'; got: '${output}'" >&2
+            return 1
+        fi
+    fi
+}
+# refute_output [--partial STR | STR]
+refute_output() {
+    if [ "${1:-}" = "--partial" ]; then
+        if [[ "$output" == *"$2"* ]]; then
+            echo "expected output not to contain '$2'; got: ${output}" >&2
+            return 1
+        fi
+    else
+        if [ "$output" = "$1" ]; then
+            echo "expected output to differ from '$1'" >&2
+            return 1
+        fi
+    fi
+}
+# assert_line [--partial] STR
+assert_line() {
+    local _partial=0
+    if [ "$1" = "--partial" ]; then _partial=1; shift; fi
+    local _l
+    for _l in "${lines[@]}"; do
+        if [ "$_partial" -eq 1 ]; then
+            [[ "$_l" == *"$1"* ]] && return 0
+        else
+            [ "$_l" = "$1" ] && return 0
+        fi
+    done
+    echo "expected a line ${_partial:+matching }'$1'; got: ${output}" >&2
+    return 1
+}
+# refute_line [--partial] STR
+refute_line() {
+    local _partial=0
+    if [ "$1" = "--partial" ]; then _partial=1; shift; fi
+    local _l
+    for _l in "${lines[@]}"; do
+        if [ "$_partial" -eq 1 ]; then
+            if [[ "$_l" == *"$1"* ]]; then
+                echo "expected no line containing '$1'; got: ${output}" >&2
+                return 1
+            fi
+        else
+            if [ "$_l" = "$1" ]; then
+                echo "expected no line '$1'; got: ${output}" >&2
+                return 1
+            fi
+        fi
+    done
+    return 0
+}
+# Stand-ins for tests/helpers/setup.bash hooks (mock state lives in this file)
+common_setup() {
+    reset_call_tracking
+    unset MOCK_RESOLUTION MOCK_DURATION MOCK_BITRATE_BPS MOCK_SAMPLE_BITRATE_BPS MOCK_OUTPUT_BITRATE_BPS \
+          MOCK_SECOND_PASS_BITRATE_BPS MOCK_THIRD_PASS_BITRATE_BPS MOCK_VIDEO_CODEC MOCK_AUDIO_CODEC MOCK_VIDEO_FILE
+    unset GLOBAL_TARGET_BITRATE_MBPS
+}
+common_teardown() { :; }
+
+# Run one transcribed bats test in a subshell: setup, body, teardown (via EXIT trap).
+# $1 = test name, $2 = test function, $3 = setup function, $4 = teardown function
+bats_case() {
+    local _name="$1" _fn="$2" _setup="$3" _teardown="$4"
+    local _out _rc=0
+    TESTS_RUN=$((TESTS_RUN + 1))
+    _out=$( ( set -e; trap "$_teardown" EXIT; "$_setup"; "$_fn" ) 2>&1 ) || _rc=$?
+    if [ "$_rc" -eq 0 ]; then
+        echo -e "${GREEN}✓${NC} $_name"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+    else
+        echo -e "${RED}✗${NC} $_name"
+        echo "$_out" | sed 's/^/  /' | head -20
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+    fi
+}
+
+
+echo "Testing remux-only.sh (file discovery, args, output paths, subtitles) (tests/test_remux_only.bats)..."
+remux_only__setup() {
+    TEST_DIR=$(mktemp -d)
+}
+remux_only__teardown() {
+    if [ -n "$TEST_DIR" ] && [ -d "$TEST_DIR" ]; then
+        rm -rf "$TEST_DIR"
+    fi
+}
+remux_only__t1() {
+    cd "$TEST_DIR"
+    mkdir -p level1/level2/level3
+    touch video0.mkv
+    touch level1/video1.avi
+    touch level1/level2/video2.webm
+    touch level1/level2/level3/video3.mkv
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        cd '$TEST_DIR'
+        find_remux_files
+    "
+    assert_success
+    assert_output "./video0.mkv"
+}
+remux_only__t2() {
+    cd "$TEST_DIR"
+    mkdir -p level1/level2/level3
+    touch video0.mkv
+    touch level1/video1.avi
+    touch level1/level2/video2.webm
+    touch level1/level2/level3/video3.mkv
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=2
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        cd '$TEST_DIR'
+        find_remux_files
+    "
+    assert_success
+    assert_line "./video0.mkv"
+    assert_line "./level1/video1.avi"
+    refute_line "./level1/level2/video2.webm"
+}
+remux_only__t3() {
+    cd "$TEST_DIR"
+    mkdir -p level1/level2/level3
+    touch video0.mkv
+    touch level1/video1.avi
+    touch level1/level2/video2.webm
+    touch level1/level2/level3/video3.mkv
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=3
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        cd '$TEST_DIR'
+        find_remux_files
+    "
+    assert_success
+    assert_line "./video0.mkv"
+    assert_line "./level1/video1.avi"
+    assert_line "./level1/level2/video2.webm"
+    refute_line "./level1/level2/level3/video3.mkv"
+}
+remux_only__t4() {
+    cd "$TEST_DIR"
+    mkdir -p level1/level2/level3
+    touch video0.mkv
+    touch level1/video1.avi
+    touch level1/level2/video2.webm
+    touch level1/level2/level3/video3.mkv
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=0
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        cd '$TEST_DIR'
+        find_remux_files
+    "
+    assert_success
+    assert_line "./video0.mkv"
+    assert_line "./level1/video1.avi"
+    assert_line "./level1/level2/video2.webm"
+    assert_line "./level1/level2/level3/video3.mkv"
+}
+remux_only__t5() {
+    cd "$TEST_DIR"
+    mkdir -p level1/level2
+    touch video0.mkv
+    touch level1/video1.avi
+    touch level1/level2/video2.webm
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        unset GLOBAL_MAX_DEPTH
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        cd '$TEST_DIR'
+        find_remux_files
+    "
+    assert_success
+    assert_line "./video0.mkv"
+    assert_line "./level1/video1.avi"
+    refute_line "./level1/level2/video2.webm"
+}
+remux_only__t6() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        parse_arguments -L 3
+        echo \"\$GLOBAL_MAX_DEPTH\"
+    "
+    assert_success
+    assert_output "3"
+}
+remux_only__t7() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        parse_arguments --max-depth 5
+        echo \"\$GLOBAL_MAX_DEPTH\"
+    "
+    assert_success
+    assert_output "5"
+}
+remux_only__t8() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        parse_arguments --preserve-name
+        echo \"\$GLOBAL_PRESERVE_NAME\"
+    "
+    assert_success
+    assert_output "1"
+}
+remux_only__t9() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        validate_depth 0 && echo 'ok0'
+        validate_depth 1 && echo 'ok1'
+        validate_depth 5 && echo 'ok5'
+        validate_depth 100 && echo 'ok100'
+    "
+    assert_success
+    assert_line "ok0"
+    assert_line "ok1"
+    assert_line "ok5"
+    assert_line "ok100"
+}
+remux_only__t10() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        validate_depth '' && echo 'empty_ok' || echo 'empty_rejected'
+        validate_depth '-1' && echo 'neg_ok' || echo 'neg_rejected'
+        validate_depth '2.5' && echo 'dec_ok' || echo 'dec_rejected'
+        validate_depth 'abc' && echo 'str_ok' || echo 'str_rejected'
+    "
+    assert_line "empty_rejected"
+    assert_line "neg_rejected"
+    assert_line "dec_rejected"
+    assert_line "str_rejected"
+}
+remux_only__t11() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        export GLOBAL_PRESERVE_NAME=0
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        generate_output_filename 'level1/subdir' 'video' '5.50'
+    "
+    assert_success
+    assert_output "level1/subdir/video.orig.5.50.Mbps.mp4"
+}
+remux_only__t12() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        export GLOBAL_PRESERVE_NAME=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        generate_output_filename '.' 'movie' '8.00'
+    "
+    assert_success
+    assert_output "movie.mp4"
+}
+remux_only__t13() {
+    cd "$TEST_DIR"
+    touch movie.mp4
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        export GLOBAL_PRESERVE_NAME=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        cd '$TEST_DIR'
+        generate_output_filename '.' 'movie' '8.00'
+    "
+    assert_success
+    assert_output "movie.remux.mp4"
+}
+remux_only__t14() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        parse_arguments -L 3
+        echo \"\$GLOBAL_MAX_DEPTH\"
+    "
+    assert_success
+    assert_output "3"
+}
+remux_only__t15() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        parse_arguments -p
+        echo \"\$GLOBAL_PRESERVE_NAME\"
+    "
+    assert_success
+    assert_output "1"
+}
+remux_only__t16() {
+    cd "$TEST_DIR"
+    touch video.mkv video.wmv video.avi video.webm video.flv video.mpg video.mpeg video.ts
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        cd '$TEST_DIR'
+        find_remux_files
+    "
+    assert_success
+    assert_line "./video.mkv"
+    assert_line "./video.wmv"
+    assert_line "./video.avi"
+    assert_line "./video.webm"
+    assert_line "./video.flv"
+    assert_line "./video.mpg"
+    assert_line "./video.mpeg"
+    assert_line "./video.ts"
+}
+remux_only__t17() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_codec() { echo 'hevc'; }
+        get_video_codec_tag() { echo 'hev1'; }
+        get_audio_codec() { echo 'aac'; }
+        is_quicklook_compatible 'test.mp4' && echo 'compatible' || echo 'incompatible'
+    "
+    assert_success
+    assert_output "incompatible"
+}
+remux_only__t18() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_codec() { echo 'h264'; }
+        get_video_codec_tag() { echo 'avc1'; }
+        get_audio_codec() { echo 'opus'; }
+        is_quicklook_compatible 'test.mp4' && echo 'compatible' || echo 'incompatible'
+    "
+    assert_success
+    assert_output "incompatible"
+}
+remux_only__t19() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_codec() { echo 'hevc'; }
+        get_video_codec_tag() { echo 'hvc1'; }
+        get_audio_codec() { echo 'aac'; }
+        is_quicklook_compatible 'test.mp4' && echo 'compatible' || echo 'incompatible'
+    "
+    assert_success
+    assert_output "compatible"
+}
+remux_only__t20() {
+    cd "$TEST_DIR"
+    touch movie.mp4
+    touch movie.fmpg.8.00.Mbps.mp4
+    touch movie.orig.7.50.Mbps.mp4
+    touch movie.hbrk.9.00.Mbps.mp4
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        cd '$TEST_DIR'
+        find_mp4_files
+    "
+    assert_success
+    assert_output "./movie.mp4"
+    refute_line "./movie.fmpg.8.00.Mbps.mp4"
+    refute_line "./movie.orig.7.50.Mbps.mp4"
+    refute_line "./movie.hbrk.9.00.Mbps.mp4"
+}
+remux_only__t21() {
+    cd "$TEST_DIR"
+    touch movie.mp4
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        export GLOBAL_PRESERVE_NAME=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        cd '$TEST_DIR'
+        generate_output_filename '.' 'movie' '8.00'
+    "
+    assert_success
+    assert_output "movie.remux.mp4"
+}
+remux_only__t22() {
+    # Verify the Phase 2 naming convention matches remux-select-audio pattern
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        # Simulate the Phase 2 output path calculation
+        file_path='./movie.mp4'
+        parse_filename \"\$file_path\"
+        base_name=\"\$BASE_NAME\"
+        dirname=\$(dirname \"\$file_path\")
+        prefix=\"\"
+        [ \"\$dirname\" != \".\" ] && prefix=\"\${dirname}/\"
+        echo \"\${prefix}\${base_name}.remux.mp4\"
+    "
+    assert_success
+    assert_output "movie.remux.mp4"
+}
+remux_only__t23() {
+    cd "$TEST_DIR"
+    touch movie.mp4
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        cd '$TEST_DIR'
+
+        get_subtitle_mode_for_file() { echo 'none'; }
+        remux_to_mp4() { touch \"\$2\"; return 0; }
+        is_quicklook_compatible() { return 1; }
+        get_video_codec() { echo 'hevc'; }
+
+        file_path='./movie.mp4'
+        parse_filename \"\$file_path\"
+        base_name=\"\$BASE_NAME\"
+        dirname=\$(dirname \"\$file_path\")
+        prefix=\"\"
+        [ \"\$dirname\" != \".\" ] && prefix=\"\${dirname}/\"
+        output_file=\"\${prefix}\${base_name}.remux.mp4\"
+
+        subtitle_mode=\$(get_subtitle_mode_for_file \"\$file_path\")
+        remux_to_mp4 \"\$file_path\" \"\$output_file\" \"\$subtitle_mode\"
+
+        [ -f \"\$file_path\" ] && echo 'original_exists' || echo 'original_deleted'
+        [ -f \"\$output_file\" ] && echo 'output_exists' || echo 'output_missing'
+    "
+    assert_success
+    assert_line "original_exists"
+    assert_line "output_exists"
+}
+remux_only__t24() {
+    cd "$TEST_DIR"
+    touch movie.mp4
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        cd '$TEST_DIR'
+
+        get_subtitle_mode_for_file() { echo 'abort'; }
+        remux_called=0
+        remux_to_mp4() { remux_called=1; }
+        is_quicklook_compatible() { return 1; }
+
+        file_path='./movie.mp4'
+        parse_filename \"\$file_path\"
+        base_name=\"\$BASE_NAME\"
+        dirname=\$(dirname \"\$file_path\")
+        prefix=\"\"
+        [ \"\$dirname\" != \".\" ] && prefix=\"\${dirname}/\"
+        output_file=\"\${prefix}\${base_name}.remux.mp4\"
+
+        skipped_count=0
+        subtitle_mode=\$(get_subtitle_mode_for_file \"\$file_path\")
+        if [ \"\$subtitle_mode\" = 'abort' ]; then
+            skipped_count=\$((skipped_count + 1))
+        else
+            remux_to_mp4 \"\$file_path\" \"\$output_file\" \"\$subtitle_mode\"
+        fi
+
+        echo \"skipped:\$skipped_count\"
+        echo \"remux_called:\$remux_called\"
+        [ -f \"\$file_path\" ] && echo 'original_exists' || echo 'original_deleted'
+    "
+    assert_success
+    assert_line "skipped:1"
+    assert_line "remux_called:0"
+    assert_line "original_exists"
+}
+remux_only__t25() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_codec() { echo 'h264'; }
+        get_audio_codec_arg() { echo 'copy'; }
+        count_audio_streams() { echo '1'; }
+        detect_subtitle_streams() { printf '0|subrip|eng|2\n1|hdmv_pgs_subtitle|jpn|3\n'; }
+        ffmpeg() { echo \"\$@\"; return 0; }
+        remux_to_mp4 'input.mkv' 'output.mp4' 'include'
+    "
+    assert_success
+    assert_output --partial "0:2"
+    refute_output --partial "0:3"
+    assert_output --partial "mov_text"
+    refute_output --partial "0:s?"
+}
+remux_only__t26() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_codec() { echo 'h264'; }
+        get_audio_codec_arg() { echo 'copy'; }
+        count_audio_streams() { echo '1'; }
+        detect_subtitle_streams() { printf '0|hdmv_pgs_subtitle|eng|2\n1|dvd_subtitle|spa|3\n'; }
+        ffmpeg() { echo \"\$@\"; return 0; }
+        remux_to_mp4 'input.mkv' 'output.mp4' 'include'
+    "
+    assert_success
+    refute_output --partial "0:s?"
+    refute_output --partial "mov_text"
+    refute_output --partial "0:2"
+    refute_output --partial "0:3"
+    refute_output --partial "c:s"
+}
+bats_case "remux_only: find_remux_files: depth 1 finds only current directory files" remux_only__t1 remux_only__setup remux_only__teardown
+bats_case "remux_only: find_remux_files: depth 2 finds current + one subdirectory level (default)" remux_only__t2 remux_only__setup remux_only__teardown
+bats_case "remux_only: find_remux_files: depth 3 finds current + two subdirectory levels" remux_only__t3 remux_only__setup remux_only__teardown
+bats_case "remux_only: find_remux_files: depth 0 (unlimited) finds all files recursively" remux_only__t4 remux_only__setup remux_only__teardown
+bats_case "remux_only: find_remux_files: default depth (2) when GLOBAL_MAX_DEPTH not set" remux_only__t5 remux_only__setup remux_only__teardown
+bats_case "remux_only: parse_arguments: -L sets GLOBAL_MAX_DEPTH" remux_only__t6 remux_only__setup remux_only__teardown
+bats_case "remux_only: parse_arguments: --max-depth sets GLOBAL_MAX_DEPTH" remux_only__t7 remux_only__setup remux_only__teardown
+bats_case "remux_only: parse_arguments: --preserve-name sets GLOBAL_PRESERVE_NAME" remux_only__t8 remux_only__setup remux_only__teardown
+bats_case "remux_only: validate_depth: accepts valid depth values" remux_only__t9 remux_only__setup remux_only__teardown
+bats_case "remux_only: validate_depth: rejects invalid depth values" remux_only__t10 remux_only__setup remux_only__teardown
+bats_case "remux_only: generate_output_filename: default naming preserves source directory" remux_only__t11 remux_only__setup remux_only__teardown
+bats_case "remux_only: generate_output_filename: preserve-name outputs {base}.mp4" remux_only__t12 remux_only__setup remux_only__teardown
+bats_case "remux_only: generate_output_filename: preserve-name falls back to {base}.remux.mp4 when {base}.mp4 exists" remux_only__t13 remux_only__setup remux_only__teardown
+bats_case "remux_only: parse_arguments -L 3: GLOBAL_MAX_DEPTH is 3 after direct call (not subshell)" remux_only__t14 remux_only__setup remux_only__teardown
+bats_case "remux_only: parse_arguments -p: GLOBAL_PRESERVE_NAME is 1 after direct call (not subshell)" remux_only__t15 remux_only__setup remux_only__teardown
+bats_case "remux_only: find_remux_files: discovers all supported non-QuickLook extensions" remux_only__t16 remux_only__setup remux_only__teardown
+bats_case "remux_only: is_quicklook_compatible: returns incompatible for HEVC file with hev1 tag" remux_only__t17 remux_only__setup remux_only__teardown
+bats_case "remux_only: is_quicklook_compatible: returns incompatible for file with non-QuickLook audio" remux_only__t18 remux_only__setup remux_only__teardown
+bats_case "remux_only: is_quicklook_compatible: returns compatible for HEVC hvc1 with AAC audio" remux_only__t19 remux_only__setup remux_only__teardown
+bats_case "remux_only: find_mp4_files: skips .mp4 files with boiler markers" remux_only__t20 remux_only__setup remux_only__teardown
+bats_case "remux_only: generate_output_filename: preserve-name falls back to .remux.mp4 when .mp4 input exists (safety for mp4-to-mp4 remux)" remux_only__t21 remux_only__setup remux_only__teardown
+bats_case "remux_only: phase 2 mp4 fix: output is named {base}.remux.mp4 not .orig." remux_only__t22 remux_only__setup remux_only__teardown
+bats_case "remux_only: phase 2 mp4 fix: original is preserved after successful remux" remux_only__t23 remux_only__setup remux_only__teardown
+bats_case "remux_only: phase 2 mp4 fix: aborts and skips when user chooses abort on subtitle prompt" remux_only__t24 remux_only__setup remux_only__teardown
+bats_case "remux_only: remux_to_mp4: mixed subtitles - only convertible stream mapped by global index" remux_only__t25 remux_only__setup remux_only__teardown
+bats_case "remux_only: remux_to_mp4: all-incompatible subtitles - no subtitle map or mov_text emitted" remux_only__t26 remux_only__setup remux_only__teardown
+echo ""
+
+echo "Testing cleanup-originals.sh (acceptance) (tests/test_cleanup_originals.bats)..."
+cleanup_originals__setup() {
+    TEST_DIR=$(mktemp -d)
+}
+cleanup_originals__teardown() {
+    if [ -n "$TEST_DIR" ] && [ -d "$TEST_DIR" ]; then
+        rm -rf "$TEST_DIR"
+    fi
+}
+SCRIPT_UNDER_TEST="${CLEANUP_SCRIPT:-cleanup-originals.sh}"
+cleanup_originals__t1() {
+    cd "$TEST_DIR"
+    touch movie.mkv
+    touch movie.fmpg.8.00.Mbps.mp4  # counterpart for movie.mkv
+    touch other.mkv                  # no counterpart
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        CLEANUP_CONFIRM=y main
+    "
+    assert_success
+    assert_line --partial "trashed:movie.mkv"
+    refute_line --partial "trashed:other.mkv"
+    assert_line --partial "1 file(s) skipped (no counterpart)"
+}
+cleanup_originals__t2() {
+    cd "$TEST_DIR"
+    touch movie.mkv
+    touch movie.orig.7.50.Mbps.mp4  # counterpart for movie.mkv
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        CLEANUP_CONFIRM=y main
+    "
+    assert_success
+    assert_line --partial "trashed:movie.mkv"
+}
+cleanup_originals__t3() {
+    cd "$TEST_DIR"
+    touch movie.mkv
+    touch movie.hbrk.9.00.Mbps.mp4  # counterpart for movie.mkv
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        CLEANUP_CONFIRM=y main
+    "
+    assert_success
+    assert_line --partial "trashed:movie.mkv"
+}
+cleanup_originals__t4() {
+    cd "$TEST_DIR"
+    touch movie.mp4
+    touch movie.remux.mp4  # counterpart for movie.mp4
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        CLEANUP_CONFIRM=y main
+    "
+    assert_success
+    assert_line --partial "trashed:movie.mp4"
+}
+cleanup_originals__t5() {
+    cd "$TEST_DIR"
+    touch movie.mkv
+    touch movie.fmpg.8.00.Mbps.mp4
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        CLEANUP_CONFIRM=n main
+    "
+    assert_success
+    refute_line --partial "trashed:"
+    assert_line --partial "Cancelled"
+}
+cleanup_originals__t6() {
+    cd "$TEST_DIR"
+    touch movie.mkv
+    touch other.mkv
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        main
+    "
+    assert_success
+    assert_line --partial "Nothing to trash"
+}
+cleanup_originals__t7() {
+    cd "$TEST_DIR"
+    touch movie.mkv
+    touch movie.fmpg.8.00.Mbps.mp4
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        main
+    " </dev/null
+    assert_success
+    assert_line --partial "Cancelled"
+    refute_line --partial "trashed:"
+}
+cleanup_originals__t8() {
+    cd "$TEST_DIR"
+    touch orphan.mkv   # no counterpart
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        cd '$TEST_DIR'
+        main
+    "
+    assert_success
+    assert_line --partial "will NOT be trashed"
+    assert_line --partial "orphan.mkv"
+}
+cleanup_originals__t9() {
+    cd "$TEST_DIR"
+    touch movie.mkv
+    touch movie.mp4  # same base, no marker — not a counterpart
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        main
+    "
+    assert_success
+    assert_line --partial "Nothing to trash"
+}
+cleanup_originals__t10() {
+    cd "$TEST_DIR"
+    touch "[belize] vacation footage (07.10.15).mp4"
+    touch "[belize] vacation footage (07.10.15).fmpg.8.03.Mbps.mp4"
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        CLEANUP_CONFIRM=y main
+    "
+    assert_success
+    assert_line --partial "trashed:[belize] vacation footage (07.10.15).mp4"
+}
+cleanup_originals__t11() {
+    cd "$TEST_DIR"
+    mkdir -p level1
+    touch movie.mkv
+    touch movie.fmpg.8.00.Mbps.mp4
+    touch level1/deep.mkv
+    touch level1/deep.fmpg.8.00.Mbps.mp4
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        CLEANUP_CONFIRM=y main
+    "
+    assert_success
+    assert_line --partial "trashed:movie.mkv"
+    refute_line --partial "trashed:deep.mkv"
+}
+cleanup_originals__t12() {
+    cd "$TEST_DIR"
+    mkdir -p level1/level2
+    touch movie.mkv
+    touch movie.fmpg.8.00.Mbps.mp4
+    touch level1/deep.mkv
+    touch level1/deep.fmpg.8.00.Mbps.mp4
+    touch level1/level2/deeper.mkv
+    touch level1/level2/deeper.fmpg.8.00.Mbps.mp4
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=2
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        CLEANUP_CONFIRM=y main
+    "
+    assert_success
+    assert_line --partial "trashed:movie.mkv"
+    assert_line --partial "trashed:deep.mkv"
+    refute_line --partial "trashed:deeper.mkv"
+}
+cleanup_originals__t13() {
+    cd "$TEST_DIR"
+    mkdir -p level1/level2/level3
+    touch movie.mkv
+    touch movie.fmpg.8.00.Mbps.mp4
+    touch level1/level2/level3/deep.mkv
+    touch level1/level2/level3/deep.fmpg.8.00.Mbps.mp4
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=0
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        CLEANUP_CONFIRM=y main
+    "
+    assert_success
+    assert_line --partial "trashed:movie.mkv"
+    assert_line --partial "trashed:deep.mkv"
+}
+cleanup_originals__t14() {
+    cd "$TEST_DIR"
+    touch 'back\slash movie.mkv'
+    touch 'back\slash movie.fmpg.8.00.Mbps.mp4'
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        CLEANUP_CONFIRM=y main
+    "
+    assert_success
+    assert_line --partial 'trashed:back\slash movie.mkv'
+}
+cleanup_originals__t15() {
+    cd "$TEST_DIR"
+    # "[ab]" must not act as a character class: a.fmpg... is another video's copy
+    touch '[ab].mkv'
+    touch 'a.fmpg.8.00.Mbps.mp4'
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        CLEANUP_CONFIRM=y main
+    "
+    assert_success
+    refute_line --partial 'trashed:[ab].mkv'
+}
+bats_case "cleanup_originals: main: trashes original with .fmpg counterpart, skips original without, when user confirms" cleanup_originals__t1 cleanup_originals__setup cleanup_originals__teardown
+bats_case "cleanup_originals: main: trashes original with .orig counterpart when user confirms" cleanup_originals__t2 cleanup_originals__setup cleanup_originals__teardown
+bats_case "cleanup_originals: main: trashes original with .hbrk counterpart when user confirms" cleanup_originals__t3 cleanup_originals__setup cleanup_originals__teardown
+bats_case "cleanup_originals: main: trashes original with .remux counterpart when user confirms" cleanup_originals__t4 cleanup_originals__setup cleanup_originals__teardown
+bats_case "cleanup_originals: main: trashes nothing when user declines confirmation" cleanup_originals__t5 cleanup_originals__setup cleanup_originals__teardown
+bats_case "cleanup_originals: main: exits cleanly with no eligible files when no counterparts exist" cleanup_originals__t6 cleanup_originals__setup cleanup_originals__teardown
+bats_case "cleanup_originals: main: cancels gracefully when stdin is closed and no CLEANUP_CONFIRM set" cleanup_originals__t7 cleanup_originals__setup cleanup_originals__teardown
+bats_case "cleanup_originals: main: reports originals without counterparts in warn list" cleanup_originals__t8 cleanup_originals__setup cleanup_originals__teardown
+bats_case "cleanup_originals: main: does not treat peer file without marker as counterpart" cleanup_originals__t9 cleanup_originals__setup cleanup_originals__teardown
+bats_case "cleanup_originals: main: handles filenames with brackets and special characters" cleanup_originals__t10 cleanup_originals__setup cleanup_originals__teardown
+bats_case "cleanup_originals: main: depth 1 scans only current directory" cleanup_originals__t11 cleanup_originals__setup cleanup_originals__teardown
+bats_case "cleanup_originals: main: depth 2 scans current directory and one subdirectory level" cleanup_originals__t12 cleanup_originals__setup cleanup_originals__teardown
+bats_case "cleanup_originals: main: depth 0 scans all directories recursively" cleanup_originals__t13 cleanup_originals__setup cleanup_originals__teardown
+bats_case "cleanup_originals: main: handles filenames containing a backslash" cleanup_originals__t14 cleanup_originals__setup cleanup_originals__teardown
+bats_case "cleanup_originals: main: glob characters in a name do not match another video's counterpart" cleanup_originals__t15 cleanup_originals__setup cleanup_originals__teardown
+echo ""
+
+echo "Testing remux-only.sh subtitle detection and classification (tests/test_subtitle_detection.bats)..."
+subtitle_detection__setup() {
+    TEST_DIR=$(mktemp -d)
+}
+subtitle_detection__teardown() {
+    if [ -n "$TEST_DIR" ] && [ -d "$TEST_DIR" ]; then
+        rm -rf "$TEST_DIR"
+    fi
+}
+subtitle_detection__t1() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        ffprobe() { echo ''; }
+        detect_subtitle_streams 'test.mkv'
+    "
+    assert_success
+    assert_output ""
+}
+subtitle_detection__t2() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        ffprobe() { echo '2,subrip,eng'; }
+        detect_subtitle_streams 'test.mkv'
+    "
+    assert_success
+    assert_output "0|subrip|eng|2"
+}
+subtitle_detection__t3() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        ffprobe() { printf '2,subrip,eng\n3,hdmv_pgs_subtitle,jpn\n'; }
+        detect_subtitle_streams 'test.mkv'
+    "
+    assert_success
+    assert_line "0|subrip|eng|2"
+    assert_line "1|hdmv_pgs_subtitle|jpn|3"
+}
+subtitle_detection__t4() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        ffprobe() { echo '2,subrip,N/A'; }
+        detect_subtitle_streams 'test.mkv'
+    "
+    assert_success
+    assert_output "0|subrip||2"
+}
+subtitle_detection__t5() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        is_subtitle_convertible 'subrip' && echo 'yes' || echo 'no'
+    "
+    assert_success
+    assert_output "yes"
+}
+subtitle_detection__t6() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        is_subtitle_convertible 'ass' && echo 'yes' || echo 'no'
+    "
+    assert_success
+    assert_output "yes"
+}
+subtitle_detection__t7() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        is_subtitle_convertible 'ssa' && echo 'yes' || echo 'no'
+    "
+    assert_success
+    assert_output "yes"
+}
+subtitle_detection__t8() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        is_subtitle_convertible 'webvtt' && echo 'yes' || echo 'no'
+    "
+    assert_success
+    assert_output "yes"
+}
+subtitle_detection__t9() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        is_subtitle_convertible 'mov_text' && echo 'yes' || echo 'no'
+    "
+    assert_success
+    assert_output "yes"
+}
+subtitle_detection__t10() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        is_subtitle_convertible 'text' && echo 'yes' || echo 'no'
+    "
+    assert_success
+    assert_output "yes"
+}
+subtitle_detection__t11() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        is_subtitle_convertible 'hdmv_pgs_subtitle' && echo 'yes' || echo 'no'
+    "
+    assert_success
+    assert_output "no"
+}
+subtitle_detection__t12() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        is_subtitle_convertible 'dvd_subtitle' && echo 'yes' || echo 'no'
+    "
+    assert_success
+    assert_output "no"
+}
+subtitle_detection__t13() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        is_subtitle_convertible 'dvbsub' && echo 'yes' || echo 'no'
+    "
+    assert_success
+    assert_output "no"
+}
+subtitle_detection__t14() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        is_subtitle_convertible 'pgssub' && echo 'yes' || echo 'no'
+    "
+    assert_success
+    assert_output "no"
+}
+subtitle_detection__t15() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        is_subtitle_convertible 'some_unknown_codec' && echo 'yes' || echo 'no'
+    "
+    assert_success
+    assert_output "no"
+}
+subtitle_detection__t16() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        is_subtitle_convertible 'SubRip' && echo 'yes' || echo 'no'
+    "
+    assert_success
+    assert_output "yes"
+}
+subtitle_detection__t17() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        report_subtitles '0|subrip|eng'
+    "
+    assert_success
+    assert_output --partial "[0:s:0] subrip (eng)"
+    assert_output --partial "convertible to mov_text"
+}
+subtitle_detection__t18() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        report_subtitles '0|hdmv_pgs_subtitle|eng'
+    "
+    assert_success
+    assert_output --partial "[0:s:0] hdmv_pgs_subtitle (eng)"
+    assert_output --partial "NOT convertible"
+}
+subtitle_detection__t19() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        report_subtitles '0|subrip|'
+    "
+    assert_success
+    assert_output --partial "[0:s:0] subrip"
+    refute_output --partial "()"
+}
+subtitle_detection__t20() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        report_subtitles '$(printf "0|subrip|eng\n1|hdmv_pgs_subtitle|jpn")'
+    "
+    assert_success
+    assert_output --partial "convertible to mov_text"
+    assert_output --partial "NOT convertible"
+}
+subtitle_detection__t21() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        echo '1' | prompt_subtitle_choice '0|subrip|eng'
+    "
+    assert_success
+    assert_output --partial "include"
+}
+subtitle_detection__t22() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        echo '2' | prompt_subtitle_choice '0|subrip|eng'
+    "
+    assert_success
+    assert_output --partial "none"
+}
+subtitle_detection__t23() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        echo '3' | prompt_subtitle_choice '0|subrip|eng'
+    "
+    assert_success
+    assert_output --partial "abort"
+}
+subtitle_detection__t24() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        echo '' | prompt_subtitle_choice '0|subrip|eng'
+    "
+    assert_success
+    assert_output --partial "abort"
+}
+subtitle_detection__t25() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        echo '3' | prompt_subtitle_choice '0|subrip|eng'
+    "
+    assert_success
+    assert_output --partial "convert to mov_text"
+}
+subtitle_detection__t26() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        echo '3' | prompt_subtitle_choice \"\$(printf '0|subrip|eng\n1|hdmv_pgs_subtitle|jpn')\"
+    "
+    assert_success
+    assert_output --partial "convertible kept, incompatible dropped"
+}
+subtitle_detection__t27() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_codec() { echo 'h264'; }
+        get_audio_codec_arg() { echo 'copy'; }
+        count_audio_streams() { echo '1'; }
+        ffmpeg() { echo \"\$@\"; return 0; }
+        remux_to_mp4 'input.mkv' 'output.mp4' 'none'
+    "
+    assert_success
+    refute_output --partial "0:s"
+}
+subtitle_detection__t28() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_codec() { echo 'h264'; }
+        get_audio_codec_arg() { echo 'copy'; }
+        count_audio_streams() { echo '1'; }
+        detect_subtitle_streams() { printf '0|subrip|eng|2\n'; }
+        ffmpeg() { echo \"\$@\"; return 0; }
+        remux_to_mp4 'input.mkv' 'output.mp4' 'include'
+    "
+    assert_success
+    assert_output --partial "0:2"
+    assert_output --partial "mov_text"
+    refute_output --partial "0:s?"
+}
+subtitle_detection__t29() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_codec() { echo 'h264'; }
+        get_audio_codec_arg() { echo 'copy'; }
+        count_audio_streams() { echo '1'; }
+        ffmpeg() { echo \"\$@\"; return 0; }
+        remux_to_mp4 'input.mkv' 'output.mp4'
+    "
+    assert_success
+    refute_output --partial "0:s"
+}
+subtitle_detection__t30() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        detect_subtitle_streams() { echo ''; }
+        get_subtitle_mode_for_file 'test.mkv'
+    "
+    assert_success
+    assert_output "none"
+}
+subtitle_detection__t31() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        detect_subtitle_streams() { echo '0|subrip|eng'; }
+        echo '1' | get_subtitle_mode_for_file 'test.mkv'
+    "
+    assert_success
+    assert_output --partial "include"
+}
+subtitle_detection__t32() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        detect_subtitle_streams() { echo '0|subrip|eng'; }
+        echo '3' | get_subtitle_mode_for_file 'test.mkv'
+    "
+    assert_success
+    assert_output --partial "abort"
+}
+subtitle_detection__t33() {
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        detect_subtitle_streams() { echo '0|subrip|eng'; }
+        mode=\$(echo '1' | get_subtitle_mode_for_file 'test.mkv')
+        echo \"captured:\$mode\"
+    "
+    assert_success
+    assert_output --partial "captured:include"
+}
+subtitle_detection__t34() {
+    cd "$TEST_DIR"
+    touch video.mkv
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_duration() { echo '120'; }
+        measure_bitrate() { echo '8000000'; }
+        bps_to_mbps() { echo '8.00'; }
+        get_subtitle_mode_for_file() { echo 'abort'; }
+        remux_to_mp4_called=0
+        remux_to_mp4() { remux_to_mp4_called=1; }
+        processed_count=0; skipped_count=0; failed_count=0
+        process_one_file '$TEST_DIR/video.mkv'
+        echo \"skipped:\$skipped_count\"
+        echo \"remux_called:\$remux_to_mp4_called\"
+    "
+    assert_success
+    assert_output --partial "skipped:1"
+    assert_output --partial "remux_called:0"
+}
+subtitle_detection__t35() {
+    cd "$TEST_DIR"
+    touch video.mkv
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_duration() { echo '120'; }
+        measure_bitrate() { echo '8000000'; }
+        bps_to_mbps() { echo '8.00'; }
+        get_subtitle_mode_for_file() { echo 'include'; }
+        received_mode=''
+        remux_to_mp4() { touch \"\$2\"; received_mode=\"\$3\"; return 0; }
+        processed_count=0; skipped_count=0; failed_count=0
+        process_one_file '$TEST_DIR/video.mkv'
+        echo \"mode:\$received_mode\"
+    "
+    assert_success
+    assert_output --partial "mode:include"
+}
+subtitle_detection__t36() {
+    cd "$TEST_DIR"
+    touch video.mkv
+
+    run bash -c "
+        export REMUX_TEST_MODE=1
+        source '$PROJECT_ROOT/remux-only.sh' 2>/dev/null
+        get_video_duration() { echo '120'; }
+        measure_bitrate() { echo '8000000'; }
+        bps_to_mbps() { echo '8.00'; }
+        get_subtitle_mode_for_file() { echo 'none'; }
+        received_mode=''
+        remux_to_mp4() { touch \"\$2\"; received_mode=\"\$3\"; return 0; }
+        processed_count=0; skipped_count=0; failed_count=0
+        process_one_file '$TEST_DIR/video.mkv'
+        echo \"mode:\$received_mode\"
+    "
+    assert_success
+    assert_output --partial "mode:none"
+}
+bats_case "subtitle_detection: detect_subtitle_streams: no subtitle streams returns empty output" subtitle_detection__t1 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: detect_subtitle_streams: single subrip stream with language" subtitle_detection__t2 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: detect_subtitle_streams: multiple streams output sequential indices" subtitle_detection__t3 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: detect_subtitle_streams: missing language tag produces empty lang field" subtitle_detection__t4 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: is_subtitle_convertible: subrip is convertible" subtitle_detection__t5 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: is_subtitle_convertible: ass is convertible" subtitle_detection__t6 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: is_subtitle_convertible: ssa is convertible" subtitle_detection__t7 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: is_subtitle_convertible: webvtt is convertible" subtitle_detection__t8 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: is_subtitle_convertible: mov_text is convertible" subtitle_detection__t9 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: is_subtitle_convertible: text is convertible" subtitle_detection__t10 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: is_subtitle_convertible: hdmv_pgs_subtitle is not convertible" subtitle_detection__t11 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: is_subtitle_convertible: dvd_subtitle is not convertible" subtitle_detection__t12 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: is_subtitle_convertible: dvbsub is not convertible" subtitle_detection__t13 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: is_subtitle_convertible: pgssub is not convertible" subtitle_detection__t14 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: is_subtitle_convertible: unknown codec is not convertible" subtitle_detection__t15 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: is_subtitle_convertible: codec matching is case-insensitive" subtitle_detection__t16 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: report_subtitles: single convertible stream shows correct label" subtitle_detection__t17 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: report_subtitles: incompatible stream shows NOT convertible label" subtitle_detection__t18 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: report_subtitles: stream with no language omits language from label" subtitle_detection__t19 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: report_subtitles: mixed streams shows both convertible and incompatible" subtitle_detection__t20 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: prompt_subtitle_choice: user enters 1 returns include" subtitle_detection__t21 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: prompt_subtitle_choice: user enters 2 returns none" subtitle_detection__t22 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: prompt_subtitle_choice: user enters 3 returns abort" subtitle_detection__t23 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: prompt_subtitle_choice: empty input returns abort" subtitle_detection__t24 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: prompt_subtitle_choice: all convertible streams show convert menu option" subtitle_detection__t25 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: prompt_subtitle_choice: mixed streams show kept/dropped menu option" subtitle_detection__t26 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: remux_to_mp4: subtitle_mode=none does not pass subtitle map to ffmpeg" subtitle_detection__t27 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: remux_to_mp4: subtitle_mode=include maps convertible stream by global index" subtitle_detection__t28 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: remux_to_mp4: no subtitle_mode arg preserves current behavior (no subtitle map)" subtitle_detection__t29 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: get_subtitle_mode_for_file: no subtitles returns none without prompting" subtitle_detection__t30 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: get_subtitle_mode_for_file: subtitles present, user chooses 1 returns include" subtitle_detection__t31 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: get_subtitle_mode_for_file: subtitles present, user chooses 3 returns abort" subtitle_detection__t32 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: get_subtitle_mode_for_file: mode is correctly captured via command substitution" subtitle_detection__t33 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: process_one_file: aborts and increments skipped_count when user chooses abort" subtitle_detection__t34 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: process_one_file: passes include mode to remux_to_mp4 when user chooses include" subtitle_detection__t35 subtitle_detection__setup subtitle_detection__teardown
+bats_case "subtitle_detection: process_one_file: no subtitles proceeds silently with mode none" subtitle_detection__t36 subtitle_detection__setup subtitle_detection__teardown
+echo ""
+
+echo "Testing boiler.sh subtitle preservation (tests/test_boiler_subtitles.bats)..."
+boiler_subtitles__setup() {
+    common_setup
+    TEST_DIR=$(mktemp -d)
+    cd "$TEST_DIR"
+}
+boiler_subtitles__teardown() {
+    common_teardown
+    cd "$PROJECT_ROOT"
+    if [ -n "$TEST_DIR" ] && [ -d "$TEST_DIR" ]; then
+        rm -rf "$TEST_DIR"
+    fi
+}
+boiler_subtitles__t1() {
+    run bash -c "
+        export BOILER_TEST_MODE=1
+        source '${PROJECT_ROOT}/boiler.sh' 2>/dev/null
+        get_video_codec() { echo 'h264'; }
+        count_audio_streams() { echo '1'; }
+        get_audio_codec_arg() { echo 'copy'; }
+        detect_subtitle_streams() { printf '0|subrip|eng|2\n1|hdmv_pgs_subtitle|jpn|3\n'; }
+        ffmpeg() { echo \"\$@\"; return 0; }
+        printf 'x' > '${TEST_DIR}/out.mp4'
+        remux_to_mp4 input.mkv '${TEST_DIR}/out.mp4'
+    "
+    assert_success
+    assert_output --partial "0:2"
+    refute_output --partial "0:3"
+    assert_output --partial "c:s mov_text"
+    refute_output --partial "0:s?"
+}
+boiler_subtitles__t2() {
+    run bash -c "
+        export BOILER_TEST_MODE=1
+        source '${PROJECT_ROOT}/boiler.sh' 2>/dev/null
+        get_video_codec() { echo 'h264'; }
+        count_audio_streams() { echo '1'; }
+        get_audio_codec_arg() { echo 'copy'; }
+        detect_subtitle_streams() { printf '0|hdmv_pgs_subtitle|eng|2\n1|dvd_subtitle|spa|3\n'; }
+        ffmpeg() { return 0; }
+        printf 'x' > '${TEST_DIR}/out.mp4'
+        SUBTITLE_DROP_FILES=()
+        remux_to_mp4 input.mkv '${TEST_DIR}/out.mp4'
+        echo \"drop_count:\${#SUBTITLE_DROP_FILES[@]}\"
+        echo \"file:\${SUBTITLE_DROP_FILES[0]:-none}\"
+    "
+    assert_success
+    assert_output --partial "drop_count:1"
+    assert_output --partial "out.mp4"
+}
+boiler_subtitles__t3() {
+    run bash -c "
+        export BOILER_TEST_MODE=1
+        source '${PROJECT_ROOT}/boiler.sh' 2>/dev/null
+        get_video_codec() { echo 'h264'; }
+        count_audio_streams() { echo '1'; }
+        get_audio_codec_arg() { echo 'copy'; }
+        detect_subtitle_streams() { return 0; }
+        ffmpeg() { echo \"\$@\"; return 0; }
+        printf 'x' > '${TEST_DIR}/out.mp4'
+        SUBTITLE_DROP_FILES=()
+        remux_to_mp4 input.mkv '${TEST_DIR}/out.mp4'
+        echo \"drop_count:\${#SUBTITLE_DROP_FILES[@]}\"
+    "
+    assert_success
+    refute_output --partial "mov_text"
+    refute_output --partial "0:s"
+    assert_output --partial "drop_count:0"
+}
+boiler_subtitles__t4() {
+    run bash -c "
+        export BOILER_TEST_MODE=1
+        source '${PROJECT_ROOT}/boiler.sh' 2>/dev/null
+        count_audio_streams() { echo '1'; }
+        get_audio_codec_arg() { echo 'copy'; }
+        detect_subtitle_streams() { printf '0|subrip|eng|2\n'; }
+        ffmpeg() { echo \"\$@\"; return 0; }
+        printf 'x' > '${TEST_DIR}/out.mp4'
+        SUBTITLE_HAS_DROP_PENDING=0
+        transcode_full_video input.mp4 '${TEST_DIR}/out.mp4' 65
+        echo \"drop_pending:\${SUBTITLE_HAS_DROP_PENDING:-0}\"
+    "
+    assert_success
+    assert_output --partial "0:2"
+    assert_output --partial "c:s mov_text"
+    assert_output --partial "drop_pending:0"
+}
+boiler_subtitles__t5() {
+    run bash -c "
+        export BOILER_TEST_MODE=1
+        source '${PROJECT_ROOT}/boiler.sh' 2>/dev/null
+        count_audio_streams() { echo '1'; }
+        get_audio_codec_arg() { echo 'copy'; }
+        detect_subtitle_streams() { printf '0|hdmv_pgs_subtitle|eng|3\n'; }
+        ffmpeg() { return 0; }
+        printf 'x' > '${TEST_DIR}/out.mp4'
+        SUBTITLE_HAS_DROP_PENDING=0
+        transcode_full_video input.mp4 '${TEST_DIR}/out.mp4' 65
+        echo \"drop_pending:\${SUBTITLE_HAS_DROP_PENDING:-0}\"
+    "
+    assert_success
+    refute_output --partial "mov_text"
+    assert_output --partial "drop_pending:1"
+}
+boiler_subtitles__t6() {
+    run bash -c "
+        export BOILER_TEST_MODE=1
+        source '${PROJECT_ROOT}/boiler.sh' 2>/dev/null
+        count_audio_streams() { echo '1'; }
+        get_audio_codec_arg() { echo 'copy'; }
+        detect_subtitle_streams() { return 0; }
+        ffmpeg() { echo \"\$@\"; return 0; }
+        printf 'x' > '${TEST_DIR}/out.mp4'
+        SUBTITLE_HAS_DROP_PENDING=0
+        transcode_full_video input.mp4 '${TEST_DIR}/out.mp4' 65
+        echo \"drop_pending:\${SUBTITLE_HAS_DROP_PENDING:-0}\"
+    "
+    assert_success
+    refute_output --partial "mov_text"
+    refute_output --partial "0:s"
+    assert_output --partial "drop_pending:0"
+}
+boiler_subtitles__t7() {
+    touch "test_video.mp4"
+    MOCK_VIDEO_FILE="test_video.mp4"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=16000000
+    MOCK_OUTPUT_BITRATE_BPS=8000000
+    MOCK_SAMPLE_BITRATE_BPS=8000000
+
+    transcode_full_video() {
+        local video_file="$1"
+        local output_file="$2"
+        local quality_value="$3"
+        echo "$video_file|$output_file|$quality_value" >> "$TRANSCODE_FULL_CALLS_FILE"
+        touch "$output_file"
+        SUBTITLE_HAS_DROP_PENDING=1
+    }
+
+    run main
+    assert_success
+    assert_output --partial "image-based subtitle"
+}
+boiler_subtitles__t8() {
+    touch "test_video.mp4"
+    MOCK_VIDEO_FILE="test_video.mp4"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=16000000
+    MOCK_OUTPUT_BITRATE_BPS=8000000
+    MOCK_SAMPLE_BITRATE_BPS=8000000
+
+    run main
+    assert_success
+    refute_output --partial "image-based subtitle"
+}
+bats_case "boiler_subtitles: boiler remux_to_mp4: mixed subs - only convertible stream mapped by global index" boiler_subtitles__t1 boiler_subtitles__setup boiler_subtitles__teardown
+bats_case "boiler_subtitles: boiler remux_to_mp4: all-image subs - adds output file to SUBTITLE_DROP_FILES" boiler_subtitles__t2 boiler_subtitles__setup boiler_subtitles__teardown
+bats_case "boiler_subtitles: boiler remux_to_mp4: no subtitles - no subtitle args and SUBTITLE_DROP_FILES empty" boiler_subtitles__t3 boiler_subtitles__setup boiler_subtitles__teardown
+bats_case "boiler_subtitles: boiler transcode_full_video: subrip stream - mapped by global index with mov_text" boiler_subtitles__t4 boiler_subtitles__setup boiler_subtitles__teardown
+bats_case "boiler_subtitles: boiler transcode_full_video: PGS-only - no subtitle args and sets SUBTITLE_HAS_DROP_PENDING" boiler_subtitles__t5 boiler_subtitles__setup boiler_subtitles__teardown
+bats_case "boiler_subtitles: boiler transcode_full_video: no subtitles - no subtitle args and SUBTITLE_HAS_DROP_PENDING unchanged" boiler_subtitles__t6 boiler_subtitles__setup boiler_subtitles__teardown
+bats_case "boiler_subtitles: main: prints subtitle drop summary when transcode drops all subtitle streams" boiler_subtitles__t7 boiler_subtitles__setup boiler_subtitles__teardown
+bats_case "boiler_subtitles: main: no subtitle summary when no subtitle drops occurred" boiler_subtitles__t8 boiler_subtitles__setup boiler_subtitles__teardown
+echo ""
+
+# ============================================================================
+# Remaining parity with tests/*.bats for boiler.sh functions
+# (audio codec args, ffmpeg error messages, discovery/matching edge cases,
+#  tier selection through main(), real measure_bitrate fallbacks)
+# ============================================================================
+
+echo "Testing additional boiler.sh parity cases (audio args, error messages, discovery, tiers, measure_bitrate)..."
+
+parity__setup() {
+    common_setup
+    TEST_DIR=$(mktemp -d)
+    cd "$TEST_DIR"
+}
+parity__teardown() {
+    cd "$PROJECT_ROOT"
+    if [ -n "${TEST_DIR:-}" ] && [ -d "$TEST_DIR" ]; then
+        rm -rf "$TEST_DIR"
+    fi
+}
+
+# is_audio_codec_mp4_compatible: mp2 (test_audio_codec_compatibility.bats)
+parity__mp2() { is_audio_codec_mp4_compatible "mp2"; }
+bats_case "is_audio_codec_mp4_compatible: mp2 is compatible" parity__mp2 parity__setup parity__teardown
+
+# get_audio_codec_arg (test_audio_codec_compatibility.bats); MOCK_AUDIO_CODEC drives the mocked ffprobe
+parity__audio_arg() {
+    # $1 = codec, $2 = expected output
+    MOCK_AUDIO_CODEC="$AUDIO_ARG_CODEC"
+    run get_audio_codec_arg "test.mkv"
+    assert_line "$AUDIO_ARG_EXPECT"
+}
+audio_arg_case() {
+    AUDIO_ARG_CODEC="$2"
+    AUDIO_ARG_EXPECT="$3"
+    bats_case "get_audio_codec_arg: $1" parity__audio_arg parity__setup parity__teardown
+}
+audio_arg_case "returns copy for aac audio" "aac" "copy"
+audio_arg_case "returns copy for ac3 audio" "ac3" "copy"
+audio_arg_case "returns aac for wmav2 audio" "wmav2" "aac"
+audio_arg_case "returns aac for vorbis audio" "vorbis" "aac"
+audio_arg_case "returns aac for wmapro audio" "wmapro" "aac"
+audio_arg_case "returns copy for unknown codec (assumes compatible)" "some_future_codec" "copy"
+audio_arg_case "returns copy when no audio codec detected (empty)" "" "copy"
+
+parity__audio_warn() {
+    MOCK_AUDIO_CODEC="wmav2"
+    run get_audio_codec_arg "test.wmv"
+    assert_output --partial "aac"
+}
+bats_case "get_audio_codec_arg: logs warning when re-encoding" parity__audio_warn parity__setup parity__teardown
+
+# ffmpeg failure messages (test_ffmpeg_error_handling.bats)
+ffmpeg_fail_output() {
+    local func_name="$1"
+    shift
+    bash -c "
+        set +e
+        export BOILER_TEST_MODE=1
+        source '$PROJECT_ROOT/boiler.sh' 2>/dev/null
+        ffmpeg() { return 1; }
+        ffprobe() {
+            if [[ \"\$*\" == *codec_name* ]] && [[ \"\$*\" == *select_streams\ a* ]]; then echo 'aac'
+            elif [[ \"\$*\" == *codec_name* ]]; then echo 'h264'
+            elif [[ \"\$*\" == *csv=p=0* ]]; then echo '1'
+            else echo ''; fi
+        }
+        $func_name \"\$@\"
+    " -- "$@"
+}
+parity__err_sample() {
+    run ffmpeg_fail_output transcode_sample "$TEST_DIR/input.mp4" "10" "5" "60" "$TEST_DIR/sample_output.mp4"
+    assert_output --partial "FFmpeg"
+}
+parity__err_full() {
+    run ffmpeg_fail_output transcode_full_video "$TEST_DIR/input.mp4" "$TEST_DIR/full_output.mp4" "60"
+    assert_output --partial "FFmpeg"
+}
+parity__err_remux() {
+    run ffmpeg_fail_output remux_to_mp4 "$TEST_DIR/input.mkv" "$TEST_DIR/remux_output.mp4"
+    assert_output --partial "FFmpeg"
+}
+bats_case "transcode_sample: outputs error message on ffmpeg failure" parity__err_sample parity__setup parity__teardown
+bats_case "transcode_full_video: outputs error message on failure" parity__err_full parity__setup parity__teardown
+bats_case "remux_to_mp4: outputs error message on ffmpeg failure" parity__err_remux parity__setup parity__teardown
+
+# find_skipped_video_files / has_encoded_version edge cases (test_file_discovery.bats, test_filename_extraction.bats)
+parity__skipped_empty() {
+    touch "regular1.mp4" "regular2.mkv"
+    GLOBAL_MAX_DEPTH=1
+    run find_skipped_video_files
+    assert_success
+    assert_output ""
+}
+parity__enc_orig() {
+    touch video.mp4 video.orig.5.00.Mbps.mp4
+    has_encoded_version "video.mp4"
+}
+parity__enc_hbrk() {
+    touch video.mp4 video.hbrk.8.00.Mbps.mp4
+    has_encoded_version "video.mp4"
+}
+bats_case "find_skipped_video_files: returns empty when no skipped files" parity__skipped_empty parity__setup parity__teardown
+bats_case "has_encoded_version: detects .orig. encoded version" parity__enc_orig parity__setup parity__teardown
+bats_case "has_encoded_version: detects .hbrk. encoded version" parity__enc_hbrk parity__setup parity__teardown
+
+# mocked transcode functions create their output file (test_mocked_functions.bats)
+parity__mock_sample_creates() {
+    local f="$TEST_DIR/sample_out.mp4"
+    transcode_sample "input.mp4" "0" "60" "52" "$f"
+    [ -f "$f" ]
+}
+parity__mock_full_creates() {
+    local f="$TEST_DIR/full_out.mp4"
+    transcode_full_video "input.mp4" "$f" "52"
+    [ -f "$f" ]
+}
+bats_case "mocked transcode_sample: creates output file" parity__mock_sample_creates parity__setup parity__teardown
+bats_case "mocked transcode_full_video: creates output file" parity__mock_full_creates parity__setup parity__teardown
+
+# Resolution tiers through main() (test_integration.bats)
+tier_case() {
+    TIER_RES="$2"; TIER_SRC="$3"; TIER_OUT="$4"; TIER_EXPECT="$5"
+    bats_case "main: uses correct target bitrate for $1" parity__tier parity__setup parity__teardown
+}
+parity__tier() {
+    touch "test_video.mp4"
+    MOCK_VIDEO_FILE="test_video.mp4"
+    MOCK_RESOLUTION="$TIER_RES"
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS="$TIER_SRC"
+    MOCK_SAMPLE_BITRATE_BPS="$TIER_OUT"
+    MOCK_OUTPUT_BITRATE_BPS="$TIER_OUT"
+    run main
+    assert_success
+    assert_output --partial "Target bitrate"
+    assert_output --partial "$TIER_EXPECT"
+}
+tier_case "2160p (4K)" 2160 20000000 11000000 "11"
+tier_case "720p" 720 10000000 5000000 "5"
+tier_case "480p" 480 5000000 2500000 "2.5"
+
+parity__override_calls() {
+    touch "test_video.mp4"
+    MOCK_VIDEO_FILE="test_video.mp4"
+    MOCK_RESOLUTION=1080
+    MOCK_DURATION=300
+    MOCK_BITRATE_BPS=12000000
+    MOCK_SAMPLE_BITRATE_BPS=9500000
+    MOCK_OUTPUT_BITRATE_BPS=9500000
+    main --target-bitrate 9.5 > /dev/null 2>&1
+    # 1 for source + 3 for samples + 1 for output = 5
+    [ "$(count_calls "$MEASURE_BITRATE_CALLS_FILE")" = "5" ]
+}
+bats_case "main: uses correct bitrate call counts with override (source + samples + output)" parity__override_calls parity__setup parity__teardown
+
+# Real measure_bitrate fallbacks (test_measure_bitrate.bats); runs the real function with a stubbed ffprobe
+run_real_measure_bitrate() {
+    local stream_bitrate="$1"
+    local format_bitrate="$2"
+    shift 2
+    PROJECT_ROOT="$PROJECT_ROOT" \
+    MOCK_STREAM_BITRATE="$stream_bitrate" \
+    MOCK_FORMAT_BITRATE="$format_bitrate" \
+    bash -c '
+        set +e
+        export BOILER_TEST_MODE=1
+        source "$PROJECT_ROOT/boiler.sh" 2>/dev/null
+        ffprobe() {
+            if [[ "$*" == *format=bit_rate* ]]; then
+                echo "$MOCK_FORMAT_BITRATE"
+            else
+                echo "$MOCK_STREAM_BITRATE"
+            fi
+        }
+        measure_bitrate "$1" "$2"
+    ' -- "$@"
+}
+parity__mb_stream() {
+    local file="$TEST_DIR/test.mp4"; touch "$file"
+    run run_real_measure_bitrate "10000000" "" "$file" "60"
+    assert_success
+    assert_output "10000000"
+}
+parity__mb_zero() {
+    local file="$TEST_DIR/test.wmv"; touch "$file"
+    run run_real_measure_bitrate "0" "11976000" "$file" "60"
+    assert_success
+    assert_output "11976000"
+}
+parity__mb_near_zero() {
+    local file="$TEST_DIR/test.wmv"; touch "$file"
+    run run_real_measure_bitrate "1" "11908002" "$file" "60"
+    assert_success
+    assert_output "11908002"
+}
+parity__mb_filesize() {
+    local file="$TEST_DIR/test.wmv"
+    # 100 * 1024 = 102400 bytes = 819200 bits; at 10s = 81920 bps
+    dd if=/dev/zero of="$file" bs=1024 count=100 2>/dev/null
+    run run_real_measure_bitrate "0" "0" "$file" "10"
+    assert_success
+    assert_output "81920"
+}
+bats_case "measure_bitrate: returns stream bitrate when ffprobe reports valid non-zero value" parity__mb_stream parity__setup parity__teardown
+bats_case "measure_bitrate: falls back to container bitrate when stream reports zero (WMV/ASF behavior)" parity__mb_zero parity__setup parity__teardown
+bats_case "measure_bitrate: falls back to container bitrate when stream reports near-zero (WMV actual: 1 bps)" parity__mb_near_zero parity__setup parity__teardown
+bats_case "measure_bitrate: falls back to file-size calculation when both stream and container report zero" parity__mb_filesize parity__setup parity__teardown
+
+echo ""
 
 echo ""
 

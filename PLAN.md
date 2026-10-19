@@ -55,6 +55,10 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 ## Future Enhancements
 
+### Subtitle Handling
+
+- [ ] **Subtitle preservation in boiler.sh**: `boiler.sh` silently drops all subtitle streams during transcoding and remuxing — no map, no warning. Text-based subtitles (subrip/SRT, ASS, SSA, WebVTT) can be converted to `mov_text` for the MP4 output; image-based subtitles (PGS, DVD) must be dropped with a warning since MP4 cannot hold them. `remux-only.sh` already has the detection and filtering machinery (`detect_subtitle_streams`, `is_subtitle_convertible`) from a recent bug fix — the same pattern needs to be applied to `remux_to_mp4()` and `transcode_full_video()` in `boiler.sh`. `transcode_sample()` intentionally excluded (quality estimation only). **See [plans/to-do/SUBTITLE-PRESERVATION.md](plans/to-do/SUBTITLE-PRESERVATION.md)** for detailed implementation plan.
+
 ### Smart Pre-processing
 
 - [x] **Skip already optimized files**: Exit early if the source file is already within ±5% of the target bitrate for its resolution. This prevents unnecessary transcoding when the file is already optimized. (Implemented)
@@ -115,6 +119,8 @@ Create a simplified command-line tool for video transcoding on macOS that:
 
 ### Quality Control and Optimization
 
+- [~] **Auto-crop (black bar removal)**: opt-in `--auto-crop` / `--crop-detect-only`. Implemented and tested; manual verification on real files (burned-in subtitles, dark-heavy film, long-file timing) is pending. **See [plans/in-progress/AUTO-CROP-FEATURE-PLAN.md](plans/in-progress/AUTO-CROP-FEATURE-PLAN.md)**.
+
 - [x] **Command-line bitrate override**: Add command-line argument support (e.g., `--target-bitrate 6.5`) to override the resolution-based target bitrate. The `transcode_video()` function already supports an optional target bitrate override parameter, so this would primarily involve adding argument parsing to the main script entry point. This would enable users to specify custom bitrates for specific transcoding operations without modifying the script. (Implemented - supports `--target-bitrate` and `-t` flags, applies to all files, validates bitrate values between 0.1 and 100 Mbps)
 - [ ] **Aspect ratio corner case handling**: Handle edge cases where files are effectively 1080p or 4K resolution but the current height-based detection picks a lower resolution target due to unusual aspect ratios (very narrow/wide videos). For example, a 2160x1080 (2:1 ultrawide) video would currently be detected as 1080p based on height, but it's effectively 4K content. Implementation considerations:
   - **Dual-dimension checking**: Use both height and width to determine resolution tier
@@ -130,6 +136,7 @@ Create a simplified command-line tool for video transcoding on macOS that:
   - **Implementation**: Update `get_video_resolution()` to extract both width and height, then modify `calculate_target_bitrate()` to use dual-dimension logic
   - **Backward compatibility**: Ensure standard 16:9 videos continue to work as expected
   This would ensure that ultrawide, portrait, or other non-standard aspect ratio videos get appropriate bitrate targets based on their actual content resolution rather than just height.
+  **Observed case**: a 3640x2048 letterboxed file lands in the 1080p tier (8 Mbps) because 2048 < 2160; auto-crop deliberately keeps the pre-crop tier, so this item is the place to define "effective resolution".
 - [ ] **Configurable target bitrates**: Allow users to customize target bitrates per resolution (2160p, 1080p, 720p, 480p) via configuration file or command-line options. This would enable users to adjust bitrates based on their specific quality/file size preferences, storage constraints, or use case requirements (e.g., archival vs. distribution).
 - [ ] **SDR vs HDR bitrate differentiation**: Detect video dynamic range (Standard Dynamic Range vs. High Dynamic Range) and apply different target bitrates accordingly. HDR content typically requires higher bitrates (e.g., 6.5 Mbps for 720p HDR vs. 5 Mbps for 720p SDR, 35-45 Mbps for 4K HDR vs. current 11 Mbps for 4K SDR) to maintain quality due to increased color depth and brightness range. This would improve quality for HDR content while keeping file sizes reasonable for SDR content.
 - [ ] **Configurable constant quality start ranges**: Allow users to specify custom starting quality values or ranges for the optimization loop, rather than always starting at a fixed value (currently 60). This would help optimize for different use cases or content types.

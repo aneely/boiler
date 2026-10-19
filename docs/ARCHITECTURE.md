@@ -37,6 +37,8 @@ Functions for extracting video properties.
 |----------|---------------|
 | `get_video_resolution()` | Video height in pixels |
 | `get_video_duration()` | Duration in seconds |
+| `get_video_dimensions()` | Width and height ("W H") |
+| `get_video_rotation()` | Rotation metadata (0 when none) |
 | `measure_bitrate()` | Calculate bitrate from file or metadata |
 | `get_source_bitrate()` | Wrapper for source file bitrate |
 | `get_video_codec()` | Detect video codec name |
@@ -55,6 +57,23 @@ Functions for determining targets and making processing decisions.
 | `is_codec_mp4_compatible()` | Check if codec can be copied to MP4 |
 
 **Output**: Target values (Mbps/bps), boolean decisions (0/1 exit codes)
+
+#### Auto-crop (opt-in, `--auto-crop` / `--crop-detect-only`)
+
+| Function | Responsibility |
+|----------|---------------|
+| `detect_black_bars()` | cropdetect over windows spread across the video; returns union crop `W:H:X:Y` |
+| `parse_cropdetect_output()` | Last well-formed numeric `crop=` value from an ffmpeg cropdetect run |
+| `get_video_dimensions()` / `get_video_rotation()` | Width/height (from `key=value` ffprobe output) and rotation tag of the first video stream |
+| `is_crop_box()` / `is_positive_int()` / `is_decimal()` | Input checks so malformed values never reach `bc` or arithmetic |
+| `combine_crop_boxes()` | Union (most conservative) of several crop boxes |
+| `crop_removed_pct()` | Percentage of the frame a crop removes |
+| `validate_crop_params()` | Sanity bounds (even values, size, inside frame) |
+| `detect_crop_for_file()` | Sets `CROP_PARAMS` for a file; skips rotation-tagged files |
+| `verify_crop_output()` | Checks encoded output has the cropped frame size |
+| `run_crop_detect_only()` | Report-only pass for `--crop-detect-only` |
+
+`CROP_PARAMS` is reset at the start of every `transcode_video()` call and read by `transcode_sample()` and `transcode_full_video()`, so samples and every pass use the same crop.
 
 ### 4. Remuxing
 

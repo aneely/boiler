@@ -12,6 +12,7 @@ Detailed technical documentation for the video transcoding tool's algorithms, de
 4. [Design Decisions](#design-decisions)
 5. [Value Sanitization](#value-sanitization)
 6. [QuickLook Compatibility](#quicklook-compatibility)
+7. [Auto-Crop](#auto-crop)
 
 ---
 
@@ -184,3 +185,19 @@ Ensures proper HEVC codec tagging in the MP4 container for better compatibility 
 - **Final output**: Includes both flags for full QuickLook compatibility
 
 This ensures transcoded videos work seamlessly with macOS Finder's QuickLook feature.
+
+---
+
+## Auto-Crop
+
+Opt-in (`--auto-crop`) removal of baked-in black bars as part of the normal re-encode.
+
+**Detection** (`detect_black_bars()`): `CROP_SAMPLE_WINDOWS` (12) windows of `CROP_SAMPLE_SECONDS` (3) are spread between 5% and 95% of the duration (videos shorter than windows x seconds are scanned whole). Each window runs `cropdetect=limit=<CROP_LIMIT/255>:round=2:reset=0`. The limit (default 24 on an 8-bit scale) is passed as a fraction of full scale because `cropdetect` compares an integer limit to raw samples at the source's native bit depth, which would sit below 10-bit black (64) and report the full frame;  with `reset=0` the reported box is cumulative, so the last `crop=` line is the window's bounding box. The windows' boxes are combined as a union, so a dark scene or a scene with a different aspect ratio can only shrink the crop. Burned-in text in a bar that appears in any window enlarges the box and is preserved. A warning is shown when more than 25% of windows disagree with the union by more than `CROP_OUTLIER_PX`. Only complete numeric `crop=W:H:X:Y` lines are parsed, non-numeric durations/sizes/limits make detection warn and skip cropping, and `CROP_DEBUG=1` prints each window's start, raw box and the union.
+
+**Acceptance**: crops removing less than `CROP_MIN_REMOVED_PCT` (3%) of the frame are ignored; crops with odd values, under 16 px, under half of either dimension, or outside the frame are rejected. Files with rotation metadata are skipped.
+
+**Why a crop forces a re-encode**: the bars are part of the coded frames, so no stream-copy path can remove them. `transcode_video()` therefore runs detection before the within-tolerance / below-target short-circuits and bypasses both when a crop is active. `preprocess_non_quicklook_files()` likewise leaves such files unremuxed for the main pass.
+
+**Target bitrate**: unchanged by cropping. The tier comes from the original (pre-crop) height and `--target-bitrate` is used verbatim. Clean bars already cost almost no bits, so output size stays about the same and cropping does not meaningfully raise bits per visible pixel; the benefits are playback (no bars, correct aspect ratio) and less decode work (see the research section of the plan). If the source is below the default tier target, its own bitrate is the target (same precedent as incompatible-codec re-encodes) so cropping never inflates a file.
+
+**Encoding**: `-vf crop=W:H:X:Y` is added to `transcode_sample()` and `transcode_full_video()` from the `CROP_PARAMS` global, and the first full-encode output is verified to have the cropped dimensions.

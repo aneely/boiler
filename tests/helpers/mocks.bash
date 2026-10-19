@@ -12,6 +12,9 @@
 #   - MOCK_THIRD_PASS_BITRATE_BPS: Override bitrate for third pass output
 #   - MOCK_VIDEO_CODEC: Override codec returned by ffprobe for codec detection
 #   - MOCK_VIDEO_FILE: Override the video file path returned by find_video_file/find_all_video_files
+#   - MOCK_WIDTH / MOCK_HEIGHT: Frame size returned by get_video_dimensions() (default 1920 x MOCK_RESOLUTION)
+#   - MOCK_OUTPUT_DIMS: "W H" returned by get_video_dimensions() for *temp_transcode* files (default: source size)
+#   - MOCK_ROTATION: Rotation returned by get_video_rotation() (default 0)
 
 # Directory for call tracking files (works across subshells)
 MOCK_CALL_TRACK_DIR="${BATS_TEST_TMPDIR:-/tmp/bats_mock_$$}"
@@ -80,6 +83,21 @@ get_video_resolution() {
 get_video_duration() {
     local video_file="$1"
     echo "${MOCK_DURATION:-300}"
+}
+
+# Mock get_video_dimensions() - returns "W H" (encoded temp files can report a different size)
+get_video_dimensions() {
+    local video_file="$1"
+    if [[ "$video_file" == *"temp_transcode"* ]] && [ -n "${MOCK_OUTPUT_DIMS:-}" ]; then
+        echo "${MOCK_OUTPUT_DIMS}"
+    else
+        echo "${MOCK_WIDTH:-1920} ${MOCK_HEIGHT:-${MOCK_RESOLUTION:-1080}}"
+    fi
+}
+
+# Mock get_video_rotation() - returns mock rotation (default: 0)
+get_video_rotation() {
+    echo "${MOCK_ROTATION:-0}"
 }
 
 # Mock ffprobe for codec detection

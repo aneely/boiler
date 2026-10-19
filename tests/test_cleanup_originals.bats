@@ -196,6 +196,41 @@ teardown() {
     assert_line --partial "trashed:[belize] vacation footage (07.10.15).mp4"
 }
 
+@test "main: handles filenames containing a backslash" {
+    cd "$TEST_DIR"
+    touch 'back\slash movie.mkv'
+    touch 'back\slash movie.fmpg.8.00.Mbps.mp4'
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        CLEANUP_CONFIRM=y main
+    "
+    assert_success
+    assert_line --partial 'trashed:back\slash movie.mkv'
+}
+
+@test "main: glob characters in a name do not match another video's counterpart" {
+    cd "$TEST_DIR"
+    # "[ab]" must not act as a character class: a.fmpg... is another video's copy
+    touch '[ab].mkv'
+    touch 'a.fmpg.8.00.Mbps.mp4'
+
+    run bash -c "
+        export CLEANUP_TEST_MODE=1
+        export GLOBAL_MAX_DEPTH=1
+        source '$PROJECT_ROOT/$SCRIPT_UNDER_TEST' 2>/dev/null
+        move_to_trash() { echo \"trashed:\$(basename \"\$1\")\"; return 0; }
+        cd '$TEST_DIR'
+        CLEANUP_CONFIRM=y main
+    "
+    assert_success
+    refute_line --partial 'trashed:[ab].mkv'
+}
+
 # ============================================================================
 # Depth traversal tests
 # ============================================================================

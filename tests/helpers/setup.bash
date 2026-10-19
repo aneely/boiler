@@ -43,10 +43,17 @@ common_setup() {
     unset MOCK_VIDEO_CODEC
     unset MOCK_AUDIO_CODEC
     unset MOCK_VIDEO_FILE
+    unset MOCK_WIDTH
+    unset MOCK_HEIGHT
+    unset MOCK_OUTPUT_DIMS
+    unset MOCK_ROTATION
     
     # Reset global variables that might be set by tests
     unset GLOBAL_TARGET_BITRATE_MBPS
     unset GLOBAL_MAX_DEPTH
+    AUTO_CROP=0
+    CROP_DETECT_ONLY=0
+    CROP_PARAMS=""
 }
 
 # Common teardown function - called after each test

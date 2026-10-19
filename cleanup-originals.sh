@@ -87,9 +87,9 @@ has_processed_counterpart() {
     basename=$(basename "$file")
     local base="${basename%.*}"
 
-    # Escape glob metacharacters for find -iname
+    # Escape glob metacharacters (including backslash) for find -iname
     local escaped
-    escaped=$(printf '%s' "$base" | sed 's/[][*?]/\\&/g')
+    escaped=$(printf '%s' "$base" | sed 's/[][*?\\]/\\&/g')
 
     for marker in fmpg orig hbrk; do
         local found

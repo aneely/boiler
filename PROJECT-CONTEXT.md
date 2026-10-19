@@ -51,6 +51,13 @@ Before committing ANY changes:
 
 **This is a hard requirement** - commits without tests are incomplete.
 
+### Testing and Probing Gotchas
+
+- `boiler.sh` runs `main` unless `BOILER_TEST_MODE=1` is set. Sourcing it in the repo root without that variable batch-processes (and renames) video files there. Probe functions with `BOILER_TEST_MODE=1`, and run end-to-end checks on copies in a scratch directory.
+- The bats helper exports `BOILER_TEST_MODE=1`; end-to-end tests of the real script must `env -u BOILER_TEST_MODE`.
+- Both suites mock `get_video_dimensions()`; to test the real function, source a fresh `boiler.sh` in a subshell (see `real_with_ffprobe_output` in `tests/test_auto_crop.bats`).
+- zsh does not word-split unquoted variables and treats `$var:r` as a modifier; use `bash -c` and `${var}` in ad-hoc commands.
+
 ### Commit Messages
 
 **Do not add** `Co-authored-by:` or trailers unless explicitly requested.
@@ -86,7 +93,7 @@ See `docs/TECHNICAL.md` for algorithm details and `docs/ARCHITECTURE.md` for str
 ```
 boiler/
 ├── boiler.sh              # Main transcoding script (modular functions)
-├── test_boiler.sh         # Legacy test suite (~6s)
+├── test_boiler.sh         # Legacy test suite (~20s)
 ├── run-bats-tests.sh      # Bats test runner
 ├── copy-1080p-test.sh     # Helper: Copy 1080p test video
 ├── copy-4k-test.sh        # Helper: Copy 4K test video
@@ -106,7 +113,7 @@ boiler/
 │   ├── completed/
 │   ├── in-progress/
 │   └── to-do/
-├── tests/                 # Bats test suite (~16s parallel)
+├── tests/                 # Bats test suite (includes test_auto_crop.bats) (~16s parallel)
 │   ├── helpers/
 │   └── *.bats
 └── testdata/              # Test video files
@@ -133,6 +140,8 @@ boiler/
 - `ffmpeg`: Video encoding
 - `ffprobe`: Video analysis
 - `bc`: Bitrate calculations
+
+**Auto-crop** (opt-in, `--auto-crop` / `--crop-detect-only`): `detect_crop_for_file()` sets `CROP_PARAMS` (`W:H:X:Y`) per file in `transcode_video()` before target/short-circuit logic; a crop forces re-encode (both short-circuits bypassed, preprocess does not remux) and is applied via `-vf crop=` in `transcode_sample()`/`transcode_full_video()`. Cropping never changes the target bitrate or tier (tier from pre-crop height); only exception is a below-target source using its own bitrate as target. Rotation-tagged files are skipped. `cropdetect` gets `CROP_LIMIT/255` (a fraction) so the threshold scales with bit depth, `get_video_dimensions()` parses `key=value` ffprobe output (CSV adds a stray separator for streams with side data), and `CROP_DEBUG=1` traces detection. `has_encoded_version()` escapes glob characters (`[ ] * ? \`) in the filename before `find -iname`. See `docs/TECHNICAL.md` (Auto-Crop) and `plans/in-progress/AUTO-CROP-FEATURE-PLAN.md`.
 
 **Audio**: All audio streams are mapped explicitly (`-map 0:v:0` and `-map 0:a` in `transcode_sample()`, `transcode_full_video()`, and `remux_to_mp4()`; `count_audio_streams()` used to omit audio map when source has none). Audio is copied when the source codec is MP4-compatible, or re-encoded to AAC when incompatible (e.g. wmav2, vorbis). Compatibility is determined by `is_audio_codec_mp4_compatible()` and `get_audio_codec_arg()`.
 

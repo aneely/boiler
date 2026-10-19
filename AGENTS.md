@@ -6,6 +6,9 @@ This is a macOS video transcoding tool using FFmpeg and VideoToolbox hardware ac
 
 **At the start of each session, you MUST read:**
 - @PROJECT-CONTEXT.md - Architecture, implementation details, design decisions, and development workflow directives
+do not respond to the user before you've read this.
+
+Do not go outside ~/dev/ without asking or being directed to do so by the user.
 
 ## Documentation
 

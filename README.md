@@ -88,6 +88,16 @@ brew install bc
   - Example: `./boiler.sh -L 1` (current directory only, no subdirectories)
   - Default depth of 2 means current directory + one subdirectory level
 
+- `--auto-crop` - Detect and remove baked-in black bars (letterbox/pillarbox) while transcoding (opt-in)
+  - Example: `./boiler.sh --auto-crop`
+  - Samples 12 windows across each video and crops to the combined (most conservative) picture area; ignores bars covering less than 3% of the frame
+  - A detected crop always forces a re-encode, even for files that would otherwise be skipped as already at target bitrate; mkv/avi/etc. files that need a crop are not remuxed first
+  - Cropping never changes the target bitrate or resolution tier (the tier comes from the original frame height). The one exception: if the source is already below the default target, its own bitrate is used as the target so the file is not inflated
+  - Skipped for files with rotation metadata
+
+- `--crop-detect-only` - Report the crop detected for each file and exit; nothing is encoded, remuxed, or renamed
+  - Example: `./boiler.sh --crop-detect-only`
+
 - `-h, --help` - Show usage information and exit
 
 ### Example Output
@@ -147,6 +157,7 @@ The tool automatically detects these video file extensions:
 
 - **macOS-only** - Currently only supports macOS (VideoToolbox hardware acceleration requires macOS)
 - Processes video files in current directory and subdirectories (default: one level deep, configurable via `-L`/`--max-depth` flag; use `-L 0` for unlimited recursive search)
+- **Auto-crop** (`--auto-crop`) only considers files that boiler would process; files already marked `.fmpg.`/`.orig.`/`.hbrk.` are not re-cropped. Burned-in subtitles that appear only in the bars, and only outside the sampled windows, can be cropped away (originals are preserved)
 - Uses hardcoded defaults (not yet configurable via config file, though command-line overrides are available)
 - Audio streams are copied when the source codec is MP4-compatible; incompatible codecs (e.g. wmav2, vorbis) are re-encoded to AAC
 - **QuickLook and audio** – Output is made Quick Look–friendly for video (MP4, faststart, HEVC tag). All audio streams are copied, not re-encoded. If the source uses an audio codec that Finder Quick Look doesn’t support in MP4 (e.g. Opus), the file may play in other apps but not in Quick Look. For best Quick Look compatibility, use a source that already has AAC audio.
@@ -205,7 +216,7 @@ For testing and development, helper scripts are available:
 
 The project includes two test suites for comprehensive coverage:
 
-**Legacy Suite** (`test_boiler.sh`) - ~6s
+**Legacy Suite** (`test_boiler.sh`) - ~20s
 - Quick feedback during development
 - Run with: `bash test_boiler.sh`
 

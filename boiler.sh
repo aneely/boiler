@@ -23,6 +23,22 @@ GLOBAL_TARGET_BITRATE_MBPS=""
 # Only set default if not already set (allows environment variable override for testing)
 GLOBAL_MAX_DEPTH="${GLOBAL_MAX_DEPTH:-2}"
 
+# Auto-crop (opt-in): detect and remove baked-in black bars while transcoding.
+# AUTO_CROP=1 via --auto-crop; CROP_DETECT_ONLY=1 via --crop-detect-only (report only, no encoding).
+# CROP_PARAMS holds the active crop for the file being processed (W:H:X:Y), or empty for none.
+# It is reset at the start of every transcode_video() call and read by transcode_sample()
+# and transcode_full_video() so samples and every full-encode pass use the same crop.
+AUTO_CROP=0
+CROP_DETECT_ONLY=0
+CROP_PARAMS=""
+# Tuning knobs (env-overridable for testing and threshold tuning)
+CROP_SAMPLE_WINDOWS="${CROP_SAMPLE_WINDOWS:-12}"    # Detection windows spread across the video
+CROP_SAMPLE_SECONDS="${CROP_SAMPLE_SECONDS:-3}"     # Length of each detection window
+CROP_MIN_REMOVED_PCT="${CROP_MIN_REMOVED_PCT:-3}"   # Ignore crops that remove less than this % of the frame
+CROP_LIMIT="${CROP_LIMIT:-24}"                      # cropdetect black threshold on an 8-bit (0-255) scale; scaled to the source bit depth
+CROP_OUTLIER_PX="${CROP_OUTLIER_PX:-16}"            # Per-edge spread that marks a window as an outlier
+CROP_DEBUG="${CROP_DEBUG:-0}"                       # 1 = print each detection window's start, raw box and the union
+
 # Encoded output extension: transcoded/remuxed output is always .mp4 (HEVC in MP4 container).
 # Used by has_encoded_version() and final output naming so "already transcoded" detection works for non-.mp4 originals.
 ENCODED_OUTPUT_EXTENSION="mp4"
@@ -140,6 +156,15 @@ OPTIONS:
                                  Default: 2 (current directory + one subdirectory level)
                                  Use 0 for unlimited depth (full recursive search)
 
+    --auto-crop                  Detect and remove baked-in black bars (letterbox/
+                                 pillarbox) while transcoding. Opt-in. A detected
+                                 crop forces a re-encode, even for files that would
+                                 otherwise be skipped as already at target bitrate.
+                                 The target bitrate is not changed by cropping.
+
+    --crop-detect-only           Report the crop detected for each file and exit.
+                                 Does not transcode, remux, or rename anything.
+
     -h, --help                   Show this help message and exit
 
 EXAMPLES:
@@ -164,6 +189,12 @@ EXAMPLES:
     # Combine options
     $0 --target-bitrate 9.5 -L 3
 
+    # Preview black bar detection without changing any files
+    $0 --crop-detect-only
+
+    # Transcode and crop black bars
+    $0 --auto-crop
+
 DEFAULT TARGET BITRATES (by resolution):
     2160p (4K):    11 Mbps
     1080p (Full HD): 8 Mbps
@@ -179,6 +210,7 @@ EOF
 # Parse command-line arguments
 # Sets global variable GLOBAL_TARGET_BITRATE_MBPS if --target-bitrate or -t is provided
 # Sets global variable GLOBAL_MAX_DEPTH if -L or --max-depth is provided
+# Sets AUTO_CROP if --auto-crop is provided; --crop-detect-only sets AUTO_CROP and CROP_DETECT_ONLY
 parse_arguments() {
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -216,6 +248,15 @@ parse_arguments() {
                 
                 GLOBAL_MAX_DEPTH=$(sanitize_value "$depth_value")
                 shift 2
+                ;;
+            --auto-crop)
+                AUTO_CROP=1
+                shift
+                ;;
+            --crop-detect-only)
+                AUTO_CROP=1
+                CROP_DETECT_ONLY=1
+                shift
                 ;;
             -h|--help)
                 show_usage
@@ -331,9 +372,15 @@ has_encoded_version() {
     # Check for encoded versions by looking for files that start with {base}.{marker}
     # and end with .{ENCODED_OUTPUT_EXTENSION} (transcoded/remuxed output is always .mp4)
     local markers=("fmpg" "orig" "hbrk")
-    
+
+    # find -iname treats the pattern as a glob, so escape glob characters in the filename
+    # (otherwise names like "Movie [2024].mp4" never match their own encoded copy and get
+    # re-encoded on every run)
+    local escaped_base
+    escaped_base=$(printf '%s' "$base_part" | sed 's/[][*?\\]/\\&/g')
+
     for marker in "${markers[@]}"; do
-        local pattern="${base_part}.${marker}."
+        local pattern="${escaped_base}.${marker}."
         local found=$(find "$search_dir" -maxdepth "$maxdepth" -type f -iname "${pattern}*.${ENCODED_OUTPUT_EXTENSION}" 2>/dev/null | head -1)
         if [ -n "$found" ]; then
             return 0  # Found encoded version
@@ -489,6 +536,363 @@ get_video_duration() {
     echo "$duration"
 }
 
+# Get video width and height using ffprobe
+# Returns: "WIDTH HEIGHT" (space separated), or empty string if unavailable
+# Uses key=value output: the CSV writer appends a stray separator ("3840x2160x") for streams
+# that carry side data (e.g. HDR metadata), which broke the bc arithmetic downstream.
+get_video_dimensions() {
+    local video_file="$1"
+    local out w h
+    out=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of default=noprint_wrappers=1 "$video_file" 2>/dev/null)
+    w=$(echo "$out" | sed -n 's/^width=\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -1)
+    h=$(echo "$out" | sed -n 's/^height=\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -1)
+    if [ -n "$w" ] && [ -n "$h" ]; then
+        echo "$w $h"
+    fi
+}
+
+# Get the rotation tag of the first video stream (display matrix or legacy rotate tag)
+# Returns: rotation in degrees, or 0 when there is none
+get_video_rotation() {
+    local video_file="$1"
+    local line
+    while IFS= read -r line; do
+        line=$(sanitize_value "$line")
+        if [ -n "$line" ] && ! [[ "$line" =~ ^-?0(\.0*)?$ ]]; then
+            echo "$line"
+            return 0
+        fi
+    done < <(ffprobe -v error -select_streams v:0 -show_entries stream_side_data=rotation:stream_tags=rotate -of default=noprint_wrappers=1:nokey=1 "$video_file" 2>/dev/null)
+    echo "0"
+}
+
+# Extract the final crop=W:H:X:Y value from ffmpeg cropdetect output
+#
+# With cropdetect's reset=0 the reported box is cumulative across frames, so the last
+# line is the bounding box of everything seen in the window.
+#
+# Arguments: ffmpeg_output (text)
+# Only well-formed lines are accepted (four non-empty numeric fields ending the line), so a
+# truncated or garbled line can never reach the bc/arithmetic code downstream.
+#
+# Arguments: ffmpeg_output (text)
+# Returns: "W:H:X:Y" on stdout, or empty string if no valid crop line was found
+parse_cropdetect_output() {
+    echo "$1" | tr -d '\r' \
+        | grep -E '(^|[[:space:]])crop=[0-9]+:[0-9]+:[0-9]+:[0-9]+[[:space:]]*$' \
+        | tail -1 | sed -E 's/^.*crop=([0-9]+:[0-9]+:[0-9]+:[0-9]+)[[:space:]]*$/\1/' || true
+}
+
+# Succeeds when the argument is a well-formed W:H:X:Y box of non-negative integers
+is_crop_box() {
+    [[ "$1" =~ ^[0-9]+:[0-9]+:[0-9]+:[0-9]+$ ]]
+}
+
+# Succeeds when the argument is a positive integer
+is_positive_int() {
+    [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -gt 0 ]
+}
+
+# Succeeds when the argument is a non-negative decimal number (e.g. a duration in seconds)
+is_decimal() {
+    [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]
+}
+
+# Combine several W:H:X:Y boxes into their union (most conservative crop)
+# Any box with real content near an edge pulls the union back toward the full frame.
+#
+# Arguments: one or more "W:H:X:Y" boxes
+# Returns: "W:H:X:Y" union on stdout, or empty string when no boxes are given
+combine_crop_boxes() {
+    local min_x="" min_y="" max_x="" max_y=""
+    local box w h x y x2 y2
+    for box in "$@"; do
+        IFS=: read -r w h x y <<< "$box"
+        x2=$((x + w))
+        y2=$((y + h))
+        if [ -z "$min_x" ]; then
+            min_x=$x; min_y=$y; max_x=$x2; max_y=$y2
+            continue
+        fi
+        [ "$x" -lt "$min_x" ] && min_x=$x
+        [ "$y" -lt "$min_y" ] && min_y=$y
+        [ "$x2" -gt "$max_x" ] && max_x=$x2
+        [ "$y2" -gt "$max_y" ] && max_y=$y2
+    done
+    if [ -z "$min_x" ]; then
+        echo ""
+    else
+        echo "$((max_x - min_x)):$((max_y - min_y)):${min_x}:${min_y}"
+    fi
+}
+
+# Percentage of the frame removed by a crop
+# Arguments: crop (W:H:X:Y), frame_width, frame_height
+# Returns: percentage with one decimal place (e.g. 25.9)
+crop_removed_pct() {
+    local crop="$1"
+    local frame_w=$(sanitize_value "$2")
+    local frame_h=$(sanitize_value "$3")
+    local w h x y
+    if ! is_crop_box "$crop" || ! is_positive_int "$frame_w" || ! is_positive_int "$frame_h"; then
+        warn "Cannot compute removed area: crop='$crop' frame='${frame_w}x${frame_h}'"
+        echo "0.0"
+        return 0
+    fi
+    IFS=: read -r w h x y <<< "$crop"
+    local pct
+    pct=$(echo "scale=6; (1 - ($w * $h) / ($frame_w * $frame_h)) * 100" | bc -l | normalize_output)
+    printf "%.1f" "${pct:-0}"
+}
+
+# Check that a crop is safe to apply
+# Rejects odd values (chroma-unsafe), tiny crops, crops under 50% of either dimension
+# (almost certainly a bad detection) and crops that fall outside the frame.
+#
+# Arguments: crop (W:H:X:Y), frame_width, frame_height
+# Returns: 0 if safe, 1 otherwise (reason is printed as a warning)
+validate_crop_params() {
+    local crop="$1"
+    local frame_w="$2"
+    local frame_h="$3"
+    local w h x y
+    IFS=: read -r w h x y <<< "$crop"
+
+    if [ -z "$w" ] || [ -z "$h" ] || [ -z "$x" ] || [ -z "$y" ]; then
+        warn "Ignoring malformed crop '$crop'"
+        return 1
+    fi
+    if [ $((w % 2)) -ne 0 ] || [ $((h % 2)) -ne 0 ] || [ $((x % 2)) -ne 0 ] || [ $((y % 2)) -ne 0 ]; then
+        warn "Ignoring crop $crop: values must be even"
+        return 1
+    fi
+    if [ "$w" -lt 16 ] || [ "$h" -lt 16 ]; then
+        warn "Ignoring crop $crop: result would be smaller than 16 pixels"
+        return 1
+    fi
+    if [ $((w * 2)) -lt "$frame_w" ] || [ $((h * 2)) -lt "$frame_h" ]; then
+        warn "Ignoring crop $crop: would remove more than half of the ${frame_w}x${frame_h} frame (likely a bad detection)"
+        return 1
+    fi
+    if [ $((x + w)) -gt "$frame_w" ] || [ $((y + h)) -gt "$frame_h" ]; then
+        warn "Ignoring crop $crop: falls outside the ${frame_w}x${frame_h} frame"
+        return 1
+    fi
+    return 0
+}
+
+# Detect black bars by running cropdetect over windows spread across the video
+#
+# Windows are evenly spaced between 5% and 95% of the duration (skips fades and logos),
+# each CROP_SAMPLE_SECONDS long. The result is the union of all windows' boxes, so a dark
+# scene or a scene with a different aspect ratio can only make the crop smaller.
+#
+# Arguments: video_file, duration_seconds, frame_width, frame_height
+# Returns (stdout): "W:H:X:Y", or empty string when no crop should be applied
+# Diagnostics go to stderr via info/warn so only the crop is captured by $()
+detect_black_bars() {
+    local video_file="$1"
+    local duration=$(sanitize_value "$2")
+    local frame_w="$3"
+    local frame_h="$4"
+
+    local windows="$CROP_SAMPLE_WINDOWS"
+    local window_secs="$CROP_SAMPLE_SECONDS"
+
+    # Everything below feeds bc; refuse non-numeric input up front instead of letting bc fail
+    if ! is_decimal "$duration"; then
+        warn "Unusable duration '$duration' for crop detection; not cropping"
+        echo ""
+        return 0
+    fi
+    if ! is_positive_int "$frame_w" || ! is_positive_int "$frame_h"; then
+        warn "Unusable frame size '${frame_w}x${frame_h}' for crop detection; not cropping"
+        echo ""
+        return 0
+    fi
+    if ! is_decimal "$CROP_LIMIT"; then
+        warn "Invalid CROP_LIMIT='$CROP_LIMIT'; not cropping"
+        echo ""
+        return 0
+    fi
+    if ! is_positive_int "$windows" || ! is_decimal "$window_secs"; then
+        warn "Invalid CROP_SAMPLE_WINDOWS='$windows' or CROP_SAMPLE_SECONDS='$window_secs'; not cropping"
+        echo ""
+        return 0
+    fi
+
+    # Short video: scan all of it in one window
+    local whole_video=0
+    if (( $(echo "$duration < $windows * $window_secs" | bc -l) )); then
+        windows=1
+        window_secs="$duration"
+        whole_video=1
+    fi
+
+    # cropdetect compares an integer limit against raw samples at the source's native bit depth,
+    # so 24 means "black" for 8-bit video but is below 10-bit black (64) and finds no bars at all.
+    # A fraction of full scale is normalised per pixel format, so pass CROP_LIMIT/255.
+    local limit_frac
+    limit_frac=$(printf "%.6f" "$(echo "scale=8; $CROP_LIMIT / 255" | bc -l | normalize_output)")
+
+    local boxes=()
+    local i start output box
+    for ((i = 0; i < windows; i++)); do
+        if [ "$whole_video" -eq 1 ]; then
+            start=0
+        elif [ "$windows" -eq 1 ]; then
+            start=$(echo "scale=2; $duration * 0.5" | bc | normalize_output)
+        else
+            start=$(echo "scale=2; $duration * (0.05 + 0.90 * $i / ($windows - 1))" | bc | normalize_output)
+        fi
+        # Keep the window inside the file
+        if (( $(echo "$start + $window_secs > $duration" | bc -l) )); then
+            start=$(echo "scale=2; v = $duration - $window_secs; if (v < 0) 0 else v" | bc | normalize_output)
+        fi
+
+        output=$(ffmpeg -hide_banner -nostdin -ss "$start" -i "$video_file" -t "$window_secs" \
+            -map 0:v:0 -an -sn -dn \
+            -vf "cropdetect=limit=${limit_frac}:round=2:reset=0" -f null - 2>&1) || true
+        box=$(parse_cropdetect_output "$output")
+        [ "$CROP_DEBUG" = "1" ] && info "[crop-debug] window $((i + 1))/$windows start=${start}s box=${box:-<none>}"
+        [ -n "$box" ] && boxes+=("$box")
+    done
+
+    if [ "${#boxes[@]}" -eq 0 ]; then
+        warn "Crop detection produced no results; not cropping"
+        echo ""
+        return 0
+    fi
+
+    local union
+    union=$(combine_crop_boxes "${boxes[@]}")
+    [ "$CROP_DEBUG" = "1" ] && info "[crop-debug] union=${union} from ${#boxes[@]} of ${windows} windows"
+
+    # Warn when several windows disagree with the union: dark-heavy or variable-aspect content
+    local ux uy uw uh x y w h outliers=0
+    IFS=: read -r uw uh ux uy <<< "$union"
+    for box in "${boxes[@]}"; do
+        IFS=: read -r w h x y <<< "$box"
+        local d_left=$((x - ux))
+        local d_top=$((y - uy))
+        local d_right=$(( (ux + uw) - (x + w) ))
+        local d_bottom=$(( (uy + uh) - (y + h) ))
+        if [ "$d_left" -gt "$CROP_OUTLIER_PX" ] || [ "$d_top" -gt "$CROP_OUTLIER_PX" ] || \
+           [ "$d_right" -gt "$CROP_OUTLIER_PX" ] || [ "$d_bottom" -gt "$CROP_OUTLIER_PX" ]; then
+            outliers=$((outliers + 1))
+        fi
+    done
+    if [ $((outliers * 4)) -gt "${#boxes[@]}" ]; then
+        warn "Crop windows disagree (${outliers} of ${#boxes[@]} differ from the combined crop); video may be dark-heavy or have a variable aspect ratio. Using the most conservative crop."
+    fi
+
+    local removed_pct
+    removed_pct=$(crop_removed_pct "$union" "$frame_w" "$frame_h")
+    if (( $(echo "$removed_pct < $CROP_MIN_REMOVED_PCT" | bc -l) )); then
+        info "No significant black bars detected (${removed_pct}% of frame; minimum ${CROP_MIN_REMOVED_PCT}%)"
+        echo ""
+        return 0
+    fi
+
+    if ! validate_crop_params "$union" "$frame_w" "$frame_h"; then
+        echo ""
+        return 0
+    fi
+
+    echo "$union"
+}
+
+# Detect black bars for a file and set CROP_PARAMS (empty when no crop applies)
+# Runs in the caller's shell so the global is visible; never fails the caller.
+#
+# Arguments: video_file, duration_seconds
+detect_crop_for_file() {
+    local video_file="$1"
+    local duration="$2"
+    CROP_PARAMS=""
+
+    local rotation
+    rotation=$(get_video_rotation "$video_file")
+    if [ "$rotation" != "0" ]; then
+        warn "Video has rotation metadata (${rotation}°); skipping crop detection"
+        return 0
+    fi
+
+    local dims frame_w frame_h
+    dims=$(get_video_dimensions "$video_file")
+    read -r frame_w frame_h <<< "$dims"
+    if [ -z "$frame_w" ] || [ -z "$frame_h" ]; then
+        warn "Could not determine video dimensions; skipping crop detection"
+        return 0
+    fi
+
+    # Mirror detect_black_bars(): a video shorter than windows x seconds is scanned whole
+    if is_decimal "$duration" && is_positive_int "$CROP_SAMPLE_WINDOWS" && is_decimal "$CROP_SAMPLE_SECONDS" \
+        && (( $(echo "$duration < $CROP_SAMPLE_WINDOWS * $CROP_SAMPLE_SECONDS" | bc -l) )); then
+        info "Detecting black bars (scanning the whole video)..."
+    else
+        info "Detecting black bars (${CROP_SAMPLE_WINDOWS} windows)..."
+    fi
+    local crop
+    crop=$(detect_black_bars "$video_file" "$duration" "$frame_w" "$frame_h") || crop=""
+    if [ -n "$crop" ]; then
+        local w h x y
+        IFS=: read -r w h x y <<< "$crop"
+        CROP_PARAMS="$crop"
+        info "Crop detected: ${frame_w}x${frame_h} -> ${w}x${h} (crop=${crop}), removes $(crop_removed_pct "$crop" "$frame_w" "$frame_h")% of frame"
+    fi
+    return 0
+}
+
+# Verify an encoded file has exactly the frame size the crop should produce
+# Arguments: output_file, crop (W:H:X:Y)
+# Returns: 0 if dimensions match, 1 otherwise
+verify_crop_output() {
+    local output_file="$1"
+    local crop="$2"
+    local w h x y
+    IFS=: read -r w h x y <<< "$crop"
+    local dims out_w out_h
+    dims=$(get_video_dimensions "$output_file")
+    read -r out_w out_h <<< "$dims"
+    if [ "$out_w" != "$w" ] || [ "$out_h" != "$h" ]; then
+        error "Cropped output is ${out_w:-unknown}x${out_h:-unknown}, expected ${w}x${h}"
+        return 1
+    fi
+    return 0
+}
+
+# Report detected crop for every video file without encoding or modifying anything
+# (--crop-detect-only). Uses normal file discovery, so already-processed files are skipped.
+run_crop_detect_only() {
+    local video_files=()
+    local line
+    while IFS= read -r line; do
+        [ -n "$line" ] && video_files+=("$line")
+    done < <(find_all_video_files)
+
+    if [ ${#video_files[@]} -eq 0 ]; then
+        error "No video files found in current directory"
+        exit 1
+    fi
+
+    check_requirements
+
+    local video_file duration
+    for video_file in "${video_files[@]}"; do
+        if [ "$INTERRUPTED" -eq 1 ]; then
+            error "Interrupted, exiting"
+            exit 130
+        fi
+        info "Checking: $video_file"
+        if ! duration=$(get_video_duration "$video_file" 2>/dev/null); then
+            warn "Skipping $video_file: Could not determine duration"
+            continue
+        fi
+        detect_crop_for_file "$video_file" "$duration"
+    done
+}
+
 # Convert bitrate from bits per second to megabits per second
 # Arguments: bitrate_bps
 # Returns: bitrate in Mbps with 2 decimal places
@@ -547,6 +951,51 @@ is_non_quicklook_format() {
             ;;
         *)
             return 1  # Already QuickLook compatible (mp4, mov, m4v)
+            ;;
+    esac
+}
+
+# Detect subtitle streams in a video file.
+# Outputs one "display_idx|codec|language|global_idx" tuple per line.
+# display_idx is 0-based within subtitle streams; global_idx is the stream index from ffprobe.
+# Language is empty when the tag is absent or N/A.
+# Arguments: input_file
+detect_subtitle_streams() {
+    local input="$1"
+    local csv
+    csv=$(ffprobe -v error -select_streams s -show_entries stream=index,codec_name:stream_tags=language -of csv=p=0 "$input" 2>/dev/null) || true
+    if [ -z "$csv" ]; then
+        return 0
+    fi
+    local display_idx=0
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        local global_idx codec lang
+        global_idx=$(echo "$line" | cut -d',' -f1)
+        codec=$(echo "$line" | cut -d',' -f2)
+        lang=$(echo "$line" | cut -d',' -f3)
+        [ "$lang" = "N/A" ] && lang=""
+        echo "${display_idx}|${codec}|${lang}|${global_idx}"
+        display_idx=$((display_idx + 1))
+    done <<< "$csv"
+}
+
+# Classify a subtitle codec as convertible to mov_text (text-based) or not (image-based/unknown).
+# Text-based codecs (subrip, ass, ssa, webvtt, mov_text, text) can be converted.
+# Image-based codecs (hdmv_pgs_subtitle, dvd_subtitle, dvbsub, pgssub) cannot.
+# Unknown codecs are treated as not convertible.
+# Arguments: codec_name
+# Returns: 0 if convertible, 1 if not
+is_subtitle_convertible() {
+    local codec="$1"
+    local codec_lower
+    codec_lower=$(echo "$codec" | tr '[:upper:]' '[:lower:]')
+    case "$codec_lower" in
+        subrip|srt|ass|ssa|webvtt|mov_text|text)
+            return 0
+            ;;
+        *)
+            return 1
             ;;
     esac
 }
@@ -733,6 +1182,39 @@ handle_non_quicklook_at_target() {
     fi
 }
 
+# Build ffmpeg subtitle map args for convertible subtitle streams only, stored in global _SUB_MAP_ARGS.
+# Silently skips image-based streams (PGS, DVD, dvbsub).
+# Arguments: input_file
+# Returns: 0 if at least one convertible stream was mapped, 1 if source had subtitles but none convertible
+# Side effect: sets global _SUB_MAP_ARGS array (empty on return 1 or no subtitles)
+append_subtitle_map_args() {
+    local input_file="$1"
+    _SUB_MAP_ARGS=()
+
+    local sub_data
+    sub_data=$(detect_subtitle_streams "$input_file")
+    [ -z "$sub_data" ] && return 0
+
+    local has_convertible=0
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        local s_codec s_global_idx
+        s_codec=$(echo "$line" | cut -d'|' -f2)
+        s_global_idx=$(echo "$line" | cut -d'|' -f4)
+        if is_subtitle_convertible "$s_codec"; then
+            _SUB_MAP_ARGS+=(-map "0:${s_global_idx}")
+            has_convertible=1
+        fi
+    done <<< "$sub_data"
+
+    if [ "$has_convertible" -eq 1 ]; then
+        _SUB_MAP_ARGS+=(-c:s mov_text)
+        return 0
+    else
+        return 1
+    fi
+}
+
 # Remux non-QuickLook compatible video file to MP4 with QuickLook compatibility
 # Copies video and audio streams without transcoding
 # Supports: mkv, wmv, avi, webm, flv (only if codec is MP4-compatible)
@@ -765,8 +1247,12 @@ remux_to_mp4() {
     audio_codec_arg=$(get_audio_codec_arg "$input_file")
     local ffmpeg_args=(-i "$input_file" -map 0:v:0)
     [ "$num_audio" -gt 0 ] && ffmpeg_args+=(-map 0:a)
+    if ! append_subtitle_map_args "$input_file"; then
+        SUBTITLE_DROP_FILES+=("$output_file")
+    fi
+    [ "${#_SUB_MAP_ARGS[@]}" -gt 0 ] && ffmpeg_args+=("${_SUB_MAP_ARGS[@]}")
     ffmpeg_args+=(-c:v copy -c:a "$audio_codec_arg" -movflags +faststart)
-    
+
     # Add HEVC tag if video codec is HEVC/H.265 for QuickLook compatibility
     # Convert to lowercase for comparison (bash 3.2 compatible)
     local codec_lower=$(echo "$video_codec" | tr '[:upper:]' '[:lower:]')
@@ -1039,6 +1525,12 @@ transcode_sample() {
     local map_args=(-map 0:v:0)
     [ "$num_audio" -gt 0 ] && map_args+=(-map 0:a)
 
+    # Black bar crop (empty unless --auto-crop detected one for this file)
+    local vf_args=()
+    if [ -n "${CROP_PARAMS:-}" ]; then
+        vf_args=(-vf "crop=${CROP_PARAMS}")
+    fi
+
     # Input seeking: -ss before -i makes seeking much faster, especially for later samples
     # -q:v: Constant quality mode (0-100, higher = higher quality/bitrate)
     local ffmpeg_exit=0
@@ -1046,6 +1538,7 @@ transcode_sample() {
         -i "$video_file" \
         "${map_args[@]}" \
         -t $sample_duration \
+        "${vf_args[@]}" \
         -c:v hevc_videotoolbox \
         -q:v ${quality_value} \
         -c:a "$audio_codec_arg" \
@@ -1492,11 +1985,22 @@ transcode_full_video() {
     audio_codec_arg=$(get_audio_codec_arg "$video_file")
     local map_args=(-map 0:v:0)
     [ "$num_audio" -gt 0 ] && map_args+=(-map 0:a)
+    if ! append_subtitle_map_args "$video_file"; then
+        SUBTITLE_HAS_DROP_PENDING=1
+    fi
+    [ "${#_SUB_MAP_ARGS[@]}" -gt 0 ] && map_args+=("${_SUB_MAP_ARGS[@]}")
+
+    # Black bar crop (empty unless --auto-crop detected one for this file)
+    local vf_args=()
+    if [ -n "${CROP_PARAMS:-}" ]; then
+        vf_args=(-vf "crop=${CROP_PARAMS}")
+    fi
 
     # -q:v: Constant quality mode (0-100, higher = higher quality/bitrate)
     local ffmpeg_exit=0
     ffmpeg -i "$video_file" \
         "${map_args[@]}" \
+        "${vf_args[@]}" \
         -c:v hevc_videotoolbox \
         -q:v ${quality_value} \
         -c:a "$audio_codec_arg" \
@@ -1756,6 +2260,17 @@ preprocess_non_quicklook_files() {
                 should_remux=1
             fi
             
+            # With --auto-crop, a file that needs cropping must be re-encoded, not remuxed.
+            # Leave it untouched so the main pass transcodes it from the original.
+            if [ "$should_remux" -eq 1 ] && [ "${AUTO_CROP:-0}" -eq 1 ]; then
+                detect_crop_for_file "$file_path" "$video_duration"
+                if [ -n "$CROP_PARAMS" ]; then
+                    info "Crop detected; skipping remux so $file_path is re-encoded with the crop"
+                    CROP_PARAMS=""
+                    continue
+                fi
+            fi
+
             if [ "$should_remux" -eq 1 ]; then
                 # Parse filename to get base name
                 parse_filename "$file_path"
@@ -1862,8 +2377,16 @@ transcode_video() {
     info "Video resolution: ${RESOLUTION}p"
     
     VIDEO_DURATION=$(get_video_duration "$VIDEO_FILE")
+
+    # Detect black bars (opt-in). Reset first so a crop never leaks from the previous file.
+    # Runs before the target/short-circuit logic because an applied crop forces a re-encode.
+    CROP_PARAMS=""
+    if [ "${AUTO_CROP:-0}" -eq 1 ]; then
+        detect_crop_for_file "$VIDEO_FILE" "$VIDEO_DURATION"
+    fi
     
     # Calculate target bitrate (use override if provided, otherwise use resolution-based target)
+    # The tier always comes from the original (pre-crop) height and cropping never changes the target.
     if [ -n "$target_bitrate_override_mbps" ]; then
         TARGET_BITRATE_MBPS="$target_bitrate_override_mbps"
         TARGET_BITRATE_BPS=$(printf "%.0f" "$(echo "scale=2; $TARGET_BITRATE_MBPS * 1000000" | bc | tr -d '\n\r')" | tr -d '\n\r')
@@ -1872,12 +2395,26 @@ transcode_video() {
         calculate_target_bitrate "$RESOLUTION"
     fi
     
+    # Measure source bitrate (needed before the bounds when a crop is active)
+    SOURCE_BITRATE_BPS=$(get_source_bitrate "$VIDEO_FILE" "$VIDEO_DURATION")
+
+    # A crop forces a re-encode. If the source is below the default tier target, re-encoding
+    # at the full tier target would inflate it, so use the source bitrate as the target (same
+    # precedent as incompatible-codec re-encodes). An explicit --target-bitrate is never changed.
+    if [ -n "$CROP_PARAMS" ] && [ -z "$target_bitrate_override_mbps" ] && [ -n "$SOURCE_BITRATE_BPS" ] && \
+       (( $(echo "$(sanitize_value "$SOURCE_BITRATE_BPS") >= 100000" | bc -l 2>/dev/null || echo 0) )) && \
+       (( $(echo "$(sanitize_value "$SOURCE_BITRATE_BPS") < $TARGET_BITRATE_BPS" | bc -l) )); then
+        TARGET_BITRATE_MBPS=$(bps_to_mbps "$SOURCE_BITRATE_BPS")
+        TARGET_BITRATE_BPS="$SOURCE_BITRATE_BPS"
+        info "Source bitrate is below the tier target; using source bitrate (${TARGET_BITRATE_MBPS} Mbps) as target for the cropped re-encode"
+    fi
+    
     # Calculate acceptable bitrate range (within 5% of target)
     LOWER_BOUND=$(echo "$TARGET_BITRATE_BPS * 0.95" | bc | tr -d '\n\r')
     UPPER_BOUND=$(echo "$TARGET_BITRATE_BPS * 1.05" | bc | tr -d '\n\r')
     
     # Check if source video is already within acceptable range or below target
-    SOURCE_BITRATE_BPS=$(get_source_bitrate "$VIDEO_FILE" "$VIDEO_DURATION")
+    # (skipped entirely when a crop is active: the file must be re-encoded to apply it)
     
     # Flag to track if we need to transcode due to codec incompatibility
     local needs_transcode_for_compatibility=0
@@ -1886,7 +2423,7 @@ transcode_video() {
         SOURCE_BITRATE_MBPS=$(bps_to_mbps "$SOURCE_BITRATE_BPS")
         
         # Check if source is within ±5% of target
-        if is_within_tolerance "$SOURCE_BITRATE_BPS" "$LOWER_BOUND" "$UPPER_BOUND"; then
+        if [ -z "$CROP_PARAMS" ] && is_within_tolerance "$SOURCE_BITRATE_BPS" "$LOWER_BOUND" "$UPPER_BOUND"; then
             info "Source video bitrate: ${SOURCE_BITRATE_MBPS} Mbps"
             info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps (acceptable range: ±5%)"
             info "Source video is already within acceptable range (5% of target). No transcoding needed."
@@ -1937,7 +2474,7 @@ transcode_video() {
         fi
 
         # Check if source is already below target (already more compressed than desired)
-        if (( $(echo "$(sanitize_value "$SOURCE_BITRATE_BPS") < $TARGET_BITRATE_BPS" | bc -l) )); then
+        if [ -z "$CROP_PARAMS" ] && (( $(echo "$(sanitize_value "$SOURCE_BITRATE_BPS") < $TARGET_BITRATE_BPS" | bc -l) )); then
             info "Source video bitrate: ${SOURCE_BITRATE_MBPS} Mbps"
             info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps"
             info "Source video is already below target bitrate. No transcoding needed."
@@ -1985,7 +2522,11 @@ transcode_video() {
         fi
         
         # If we reach here, source is outside tolerance and above target - show why we're transcoding
-        if [ -n "$SOURCE_BITRATE_BPS" ]; then
+        if [ -n "$CROP_PARAMS" ]; then
+            info "Source video bitrate: ${SOURCE_BITRATE_MBPS} Mbps"
+            info "Target bitrate: ${TARGET_BITRATE_MBPS} Mbps"
+            info "Re-encoding to apply crop..."
+        elif [ -n "$SOURCE_BITRATE_BPS" ]; then
             local lower_bound_mbps=$(bps_to_mbps "$LOWER_BOUND")
             local upper_bound_mbps=$(bps_to_mbps "$UPPER_BOUND")
             info "Source video bitrate: ${SOURCE_BITRATE_MBPS} Mbps"
@@ -2013,6 +2554,13 @@ transcode_video() {
     
     # Transcode full video to temporary file
     transcode_full_video "$VIDEO_FILE" "$temp_output_file" "$OPTIMAL_QUALITY"
+
+    # A crop must produce exactly the expected frame size; anything else means a bad encode
+    if [ -n "$CROP_PARAMS" ] && ! verify_crop_output "$temp_output_file" "$CROP_PARAMS"; then
+        rm -f "$temp_output_file"
+        cleanup_samples "$VIDEO_FILE"
+        return 1
+    fi
     
     # Measure actual bitrate of transcoded file
     local actual_bitrate_bps=$(measure_bitrate "$temp_output_file" "$VIDEO_DURATION")
@@ -2107,7 +2655,12 @@ transcode_video() {
     
     # Rename temporary file to final filename
     mv "$temp_output_file" "$OUTPUT_FILE"
-    
+
+    if [ "${SUBTITLE_HAS_DROP_PENDING:-0}" -eq 1 ]; then
+        SUBTITLE_DROP_FILES+=("$OUTPUT_FILE")
+        SUBTITLE_HAS_DROP_PENDING=0
+    fi
+
     # Clean up any remaining sample files
     cleanup_samples "$VIDEO_FILE"
     
@@ -2127,7 +2680,7 @@ transcode_video() {
 #   4. Processes each file through transcode_video()
 #
 # Arguments:
-#   $@ - Command-line arguments (--target-bitrate, --max-depth, --help)
+#   $@ - Command-line arguments (--target-bitrate, --max-depth, --auto-crop, --crop-detect-only, --help)
 #
 # Workflow:
 #   - Sets up signal handlers for graceful interrupt handling
@@ -2144,7 +2697,16 @@ transcode_video() {
 main() {
     # Parse command-line arguments
     parse_arguments "$@"
-    
+
+    SUBTITLE_DROP_FILES=()
+    SUBTITLE_HAS_DROP_PENDING=0
+
+    # Report-only mode: nothing is encoded, remuxed or renamed
+    if [ "$CROP_DETECT_ONLY" -eq 1 ]; then
+        run_crop_detect_only
+        return 0
+    fi
+
     # Preprocess non-QuickLook compatible files first (remux files within tolerance or below target)
     preprocess_non_quicklook_files
     
@@ -2233,6 +2795,17 @@ main() {
         fi
     done
     
+    if [ "${#SUBTITLE_DROP_FILES[@]}" -gt 0 ]; then
+        warn ""
+        warn "The following output files have no subtitles; the source file(s) had"
+        warn "image-based subtitle streams (PGS/DVD) that cannot be converted to MP4:"
+        for _drop_file in "${SUBTITLE_DROP_FILES[@]}"; do
+            warn "  $_drop_file"
+        done
+        warn "Original files are preserved — use remux-select-audio.sh to keep"
+        warn "image-based subtitles in MKV output."
+    fi
+
     info ""
     info "Batch processing complete! Processed ${total_files} file(s)"
 }
